@@ -7,11 +7,18 @@
 -- Portability : unknown
 --
 module Network.SMTP
-    ( SMTPChan
+    ( -- * SMTP Server
+      -- ** Notifications
+      SMTPChan
     , newSMTPChan
     , getNextEmail
+      -- ** Configuration
     , SMTPConfig(..)
-    , runServerOnPort
+      -- ** Main method
+    , acceptClient
+    , rejectClient
+      -- ** Helpers
+    , respond
     ) where
 
 import Network.SMTP.Types
@@ -19,45 +26,17 @@ import Network.SMTP.Auth
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.STM
-import Control.Concurrent.MVar
 import Control.Monad.State
 
 import qualified Data.ByteString.Char8     as BC
 
-import Network
-import qualified Network.Socket.ByteString as SB
 import System.IO
-
-------------------------------------------------------------------------------
---                           Server/MainLoop                                --
-------------------------------------------------------------------------------
---
---TODO: move that part in main, non-sense to let it there
 
 data SMTPConfig = SMTPConfig
     { smtpPort       :: Int
     , smtpDomainName :: String
     , smtpMaxClients :: Int
     } deriving (Show, Read, Eq)
-
-runServerOnPort :: SMTPConfig -> SMTPChan -> IO ()
-runServerOnPort config chan = withSocketsDo $ do
-    let port = fromIntegral $ smtpPort config
-    socket <- listenOn $ PortNumber port
-    connections <- newMVar 0
-    acceptConnection config connections socket chan
-
-acceptConnection :: SMTPConfig -> MVar Int -> Socket -> SMTPChan -> IO ()
-acceptConnection config connections sock chan = do
-    (handle, _, _) <- accept sock
-    nConnections <- readMVar connections
-    if nConnections < smtpMaxClients config
-        then do modifyMVar_ connections $ \c -> return $ c + 1
-                forkIO $ do
-                    acceptClient config handle chan
-                    modifyMVar_ connections $ \c -> return $ c - 1
-        else do forkIO $ rejectClient config handle
-    acceptConnection config connections sock chan
 
 ------------------------------------------------------------------------------
 --                               SMTPChan                                   --
@@ -179,18 +158,11 @@ commandProcessor :: SMTPConfig -> Handle -> EmailS ()
 commandProcessor config h = do
     buff <- liftIO $ BC.hGetLine h
     case parseCommandByteString $ BC.concat [buff, BC.pack "\n\r"] of
-        Right (HELO client) -> do commandHandleHELO h client
-                                  commandProcessor config h
-        Right (MAIL from)   -> do commandHandleMAIL h from
-                                  commandProcessor config h
-        Right (RCPT to)     -> do commandHandleRCPT h to
-                                  commandProcessor config h
-        Right DATA          -> do commandHandleDATA h
-                                  commandProcessor config h
-        Right QUIT          -> do liftIO $ closeHandle config h
-        Right (INVALCMD _)  -> do liftIO $ respond500 h
-                                  commandProcessor config h
-        Right _             -> do liftIO $ respond502 h
-                                  commandProcessor config h
-        Left _              -> do liftIO $ respond500 h
-                                  liftIO $ closeHandle config h
+        Right (HELO client) -> commandHandleHELO h client >> commandProcessor config h
+        Right (MAIL from)   -> commandHandleMAIL h from   >> commandProcessor config h
+        Right (RCPT to)     -> commandHandleRCPT h to     >> commandProcessor config h
+        Right DATA          -> commandHandleDATA h        >> commandProcessor config h
+        Right QUIT          -> liftIO $ closeHandle config h
+        Right (INVALCMD _)  -> (liftIO $ respond500 h)    >> commandProcessor config h
+        Right _             -> (liftIO $ respond502 h)    >> commandProcessor config h
+        Left _              -> (liftIO $ respond500 h)    >> (liftIO $ closeHandle config h)

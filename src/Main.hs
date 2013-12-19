@@ -6,17 +6,34 @@
 -- Stability   : experimental
 -- Portability : unknown
 --
-
+import Network
 import Network.SMTP
 import Network.SMTP.Types
 import Network.SMTP.Auth
 
+import System.Environment (getArgs)
+
 import Control.Concurrent (forkIO)
+import Control.Concurrent.MVar
+
+defaultSMTPServerConfig :: SMTPConfig
+defaultSMTPServerConfig =
+    SMTPConfig
+        25          -- listen on SMTP port
+        "localhost" -- domain name of this service
+        10          -- number of simultaneous connections authorized
 
 main = do
+    args <- getArgs
+    case args of
+        ["port", p, "domain", d, "connections", c] -> startSMTPServer $ SMTPConfig (read p) d (read c)
+        ["default"] -> startSMTPServer defaultSMTPServerConfig
+        _           -> putStrLn "usage: [port <port> domain <domain> connections <connections>] | default"
+
+startSMTPServer config = do
     smtpChan <- newSMTPChan 
     forkIO $ recvLoop smtpChan
-    runServerOnPort (SMTPConfig 8080 "localhost" 1) smtpChan
+    runServerOnPort config smtpChan
 
 recvLoop smtpChan = do
     email <- getNextEmail smtpChan
@@ -24,3 +41,27 @@ recvLoop smtpChan = do
     putStrLn $ show email
     putStrLn "#######################################"
     recvLoop smtpChan
+
+
+------------------------------------------------------------------------------
+--                          SMTP-Server: MainLoop                           --
+------------------------------------------------------------------------------
+
+runServerOnPort :: SMTPConfig -> SMTPChan -> IO ()
+runServerOnPort config chan = withSocketsDo $ do
+    let port = fromIntegral $ smtpPort config
+    socket <- listenOn $ PortNumber port
+    connections <- newMVar 0
+    acceptConnection config connections socket chan
+
+acceptConnection :: SMTPConfig -> MVar Int -> Socket -> SMTPChan -> IO ()
+acceptConnection config connections sock chan = do
+    (handle, _, _) <- accept sock
+    nConnections <- readMVar connections
+    if nConnections < smtpMaxClients config
+        then do modifyMVar_ connections $ \c -> return $ c + 1
+                forkIO $ do
+                    acceptClient config handle chan
+                    modifyMVar_ connections $ \c -> return $ c - 1
+        else do forkIO $ rejectClient config handle
+    acceptConnection config connections sock chan
