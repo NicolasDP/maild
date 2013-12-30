@@ -12,10 +12,12 @@ module Network.SMTP.Types
     , Email(..)
     , parseCommandByteString
     , parseCommandString
+    , getLocalPart
+    , getDomainPart
     ) where
 
 import qualified Data.ByteString.Char8 as BC
-import Data.List (intercalate)
+import Data.List as L (intercalate, takeWhile, dropWhile, tail)
 import Data.Char (toUpper, isAlphaNum)
 import Data.Attoparsec.ByteString.Char8 as AC
 
@@ -29,6 +31,16 @@ data Email = Email
     , mailTo     :: String
     , mailData   :: BC.ByteString
     } deriving (Show)
+
+-- | In the case of an address email: local-part@domain
+-- return local-part
+getLocalPart :: String -> String
+getLocalPart = L.takeWhile (\c -> c /= '@')
+
+-- | In the cas of an address email: local-part@domain
+-- return domain
+getDomainPart :: String -> String
+getDomainPart = L.dropWhile (\c -> c /= '@')
 
 data Command
     = HELO String

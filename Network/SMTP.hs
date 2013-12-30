@@ -61,14 +61,20 @@ getNextEmail = atomically . readTChan
 --                               Handling Clients                           --
 ------------------------------------------------------------------------------
 
--- | Accept a client, and communicate with him to get an email.
+-- | Accept a client, and communicate with him to get emails.
 -- -1- send code 221 ;
 -- -2- read/answer any commands
 acceptClient :: SMTPConfig -> Handle -> SMTPChan -> IO ()
 acceptClient config h chan = do
     respond220 h (smtpDomainName config)
-    email <- execStateT (commandProcessor config h) (Email "" "" "" BC.empty)
-    publishEmail chan email
+    clientLoop
+    where
+        clientLoop = do
+            (err, email) <- runStateT (commandProcessor config h) (Email "" "" "" BC.empty)
+            case err of
+                CPQUIT  -> closeHandle config h
+                CPEMAIL -> publishEmail chan email >> clientLoop
+                CPAGAIN -> clientLoop
 
 -- | Reject a client:
 -- as described in RFC5321:
@@ -154,15 +160,20 @@ commandHandleDATA h = do
                 then return t
                 else readMailData h $ BC.concat [t, buff, BC.pack "\n"]
 
-commandProcessor :: SMTPConfig -> Handle -> EmailS ()
+data CommandProcessorERROR
+    = CPQUIT
+    | CPEMAIL
+    | CPAGAIN
+
+commandProcessor :: SMTPConfig -> Handle -> EmailS (CommandProcessorERROR)
 commandProcessor config h = do
     buff <- liftIO $ BC.hGetLine h
     case parseCommandByteString $ BC.concat [buff, BC.pack "\n\r"] of
         Right (HELO client) -> commandHandleHELO h client >> commandProcessor config h
         Right (MAIL from)   -> commandHandleMAIL h from   >> commandProcessor config h
         Right (RCPT to)     -> commandHandleRCPT h to     >> commandProcessor config h
-        Right DATA          -> commandHandleDATA h        >> commandProcessor config h
-        Right QUIT          -> liftIO $ closeHandle config h
+        Right DATA          -> commandHandleDATA h        >> return CPEMAIL
+        Right QUIT          -> return CPQUIT
         Right (INVALCMD _)  -> (liftIO $ respond500 h)    >> commandProcessor config h
         Right _             -> (liftIO $ respond502 h)    >> commandProcessor config h
-        Left _              -> (liftIO $ respond500 h)    >> (liftIO $ closeHandle config h)
+        Left _              -> liftIO $ respond500 h      >> return CPAGAIN
