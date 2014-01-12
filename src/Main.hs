@@ -40,11 +40,15 @@ startSMTPServer config = do
 
 recvLoop dir smtpChan = do
     email <- getNextEmail smtpChan
-    muser <- getUser dir $ getLocalPart $ mailTo email
-    case muser of
-        Just user -> storeAnEmail user email
-        Nothing   -> putStrLn $ "Error: user doesn't exist" -- TODO: notify handle?
+    mapM_ (handleUsers dir email) (mailTo email)
     recvLoop dir smtpChan
+    where
+        handleUsers :: FilePath -> Email -> String -> IO ()
+        handleUsers dir email useraddr = do
+            muser <- getUser dir $ getLocalPart useraddr
+            case muser of
+                Just user -> storeAnEmail user email
+                Nothing   -> putStrLn $ "Error: user doesn't localy exit: " ++ useraddr -- TODO: notify handle/forward?
 
 ------------------------------------------------------------------------------
 --                          SMTP-Server: MainLoop                           --

@@ -68,17 +68,17 @@ getNextEmail = atomically . readTChan
 acceptClient :: SMTPConfig -> Handle -> SMTPChan -> IO ()
 acceptClient config h chan = do
     respond220 h (smtpDomainName config)
-    clientLoop "" "" ""
+    clientLoop [] [] []
     where
-        clientLoop :: String -> String -> String -> IO ()
+        clientLoop :: String -> String -> [String] -> IO ()
         clientLoop client from to = do
             (err, email) <- runStateT (commandProcessor config h) (Email client from to BC.empty)
             case err of
                 CPQUIT  -> closeHandle config h
-                CPRESET -> clientLoop "" "" "" -- clear the information
+                CPRESET -> clientLoop [] [] [] -- clear the information
                 -- RFC5321 (section DATA: 4.1.1.4): process the storage of an email after DATA command:
                 -- and clear the buffers (so restart a loop without any information)
-                CPEMAIL -> publishEmail chan email >> clientLoop "" "" ""
+                CPEMAIL -> publishEmail chan email >> clientLoop [] [] []
                 CPAGAIN -> clientLoop (mailClient email) (mailFrom email) (mailTo email)
 
 -- | Reject a client:
@@ -150,7 +150,7 @@ commandHandleMAIL h from = do
 
 commandHandleRCPT h to = do
     -- Check the destination and the relay
-    modify (\s -> s { mailTo = to })
+    modify (\s -> s { mailTo = (to:mailTo s) })
     liftIO $ respond250 h
 
 commandHandleDATA h = do

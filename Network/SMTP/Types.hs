@@ -28,7 +28,7 @@ import Network.SMTP.Auth
 data Email = Email
     { mailClient :: String
     , mailFrom   :: String
-    , mailTo     :: String
+    , mailTo     :: [String]
     , mailData   :: BC.ByteString
     } deriving (Show)
 
