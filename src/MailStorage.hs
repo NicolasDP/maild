@@ -12,19 +12,21 @@ module MailStorage
     ( -- * User management
       User(..)
     , getUser
+      -- * Emails
+      -- ** add a new email to user
     , storeAnEmail
     ) where
 
--- import qualified Crypto.Hash.SHA1 as SHA1
 import qualified Crypto.Hash as Hash
 
-import System.FilePath
-import System.Directory
+-- TODO: move to filesytem-path instead
+import System.FilePath  (FilePath, (</>))
+import System.Directory (getDirectoryContents)
 
 import Network.SMTP.Types (Email(..))
 
 import System.Hourglass (timeCurrent)
-import Data.Hourglass (Elapsed)
+import Data.Hourglass   (Elapsed)
 import qualified Data.ByteString.Char8 as BC
 
 ------------------------------------------------------------------------------
@@ -87,4 +89,4 @@ storeAnEmail user email = do
                         ++ "-" ++ (mailFrom email)
                         ++ "-" ++ (mailClient email)
                         ++ "-" ++ (BC.unpack $ hash time)
-                        ++ "-"
+                        ++ ":2," -- see Maildir specifications
