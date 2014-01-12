@@ -36,6 +36,7 @@ data SMTPConfig = SMTPConfig
     { smtpPort       :: Int
     , smtpDomainName :: String
     , smtpMaxClients :: Int
+    , smtpMailDir    :: FilePath
     } deriving (Show, Read, Eq)
 
 ------------------------------------------------------------------------------

@@ -11,6 +11,8 @@ import Network.SMTP
 import Network.SMTP.Types
 import Network.SMTP.Auth
 
+import MailStorage
+
 import System.Environment (getArgs)
 
 import Control.Concurrent (forkIO)
@@ -38,9 +40,10 @@ startSMTPServer config = do
 
 recvLoop dir smtpChan = do
     email <- getNextEmail smtpChan
-    putStrLn "############################# New Email"
-    putStrLn $ show email
-    putStrLn "#######################################"
+    muser <- getUser dir $ getLocalPart $ mailTo email
+    case muser of
+        Just user -> storeAnEmail user email
+        Nothing   -> putStrLn $ "Error: user doesn't exist" -- TODO: notify handle?
     recvLoop dir smtpChan
 
 ------------------------------------------------------------------------------
