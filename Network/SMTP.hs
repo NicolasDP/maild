@@ -68,14 +68,15 @@ getNextEmail = atomically . readTChan
 acceptClient :: SMTPConfig -> Handle -> SMTPChan -> IO ()
 acceptClient config h chan = do
     respond220 h (smtpDomainName config)
-    clientLoop
+    clientLoop "" "" ""
     where
-        clientLoop = do
-            (err, email) <- runStateT (commandProcessor config h) (Email "" "" "" BC.empty)
+        clientLoop client from to = do
+            (err, email) <- runStateT (commandProcessor config h) (Email client from to BC.empty)
             case err of
                 CPQUIT  -> closeHandle config h
-                CPEMAIL -> publishEmail chan email >> clientLoop
-                CPAGAIN -> clientLoop
+                CPEMAIL -> do publishEmail chan email
+                              clientLoop (mailClient email) (mailFrom email) (mailTo email)
+                CPAGAIN -> clientLoop (mailClient email) (mailFrom email) (mailTo email)
 
 -- | Reject a client:
 -- as described in RFC5321:
