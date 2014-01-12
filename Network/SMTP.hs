@@ -70,12 +70,15 @@ acceptClient config h chan = do
     respond220 h (smtpDomainName config)
     clientLoop "" "" ""
     where
+        clientLoop :: String -> String -> String -> IO ()
         clientLoop client from to = do
             (err, email) <- runStateT (commandProcessor config h) (Email client from to BC.empty)
             case err of
                 CPQUIT  -> closeHandle config h
-                CPEMAIL -> do publishEmail chan email
-                              clientLoop (mailClient email) (mailFrom email) (mailTo email)
+                CPRESET -> clientLoop "" "" "" -- clear the information
+                -- RFC5321 (section DATA: 4.1.1.4): process the storage of an email after DATA command:
+                -- and clear the buffers (so restart a loop without any information)
+                CPEMAIL -> publishEmail chan email >> clientLoop "" "" ""
                 CPAGAIN -> clientLoop (mailClient email) (mailFrom email) (mailTo email)
 
 -- | Reject a client:
@@ -156,14 +159,18 @@ commandHandleDATA h = do
     modify (\s -> s { mailData = d})
     liftIO $ respond250 h
     where
+        -- TODO: insert a timestamp at the TOP of the Data content
         readMailData h t = do
             buff <- liftIO $ BC.hGetLine h
             if buff == BC.pack (".\r")
                 then return t
                 else readMailData h $ BC.concat [t, buff, BC.pack "\n"]
 
+commandHandleRSET h = liftIO $ respond250 h
+
 data CommandProcessorERROR
     = CPQUIT
+    | CPRESET
     | CPEMAIL
     | CPAGAIN
 
@@ -176,6 +183,7 @@ commandProcessor config h = do
         Right (RCPT to)     -> commandHandleRCPT h to     >> commandProcessor config h
         Right DATA          -> commandHandleDATA h        >> return CPEMAIL
         Right QUIT          -> return CPQUIT
+        Right RSET          -> commandHandleRSET h        >> return CPRESET
         Right (INVALCMD _)  -> (liftIO $ respond500 h)    >> commandProcessor config h
         Right _             -> (liftIO $ respond502 h)    >> commandProcessor config h
         Left _              -> liftIO $ respond500 h      >> return CPAGAIN
