@@ -17,16 +17,11 @@ cabal-version:       >=1.10
 
 executable maild
   main-is:             Main.hs
-  other-modules:       MailStorage
   -- other-extensions:    
   build-depends:       base >=4.7 && <4.8
                      , network
-                     , maild
-                     , hourglass
-                     , cryptohash
-                     , directory
                      , filepath
-                     , bytestring
+                     , maild
   hs-source-dirs:      src
   default-language:    Haskell2010
 
@@ -34,9 +29,15 @@ Library
   exposed-modules:     Network.SMTP
                      , Network.SMTP.Types
                      , Network.SMTP.Auth
+                     , Data.MailStorage
   build-depends:       base >=4.7 && <4.8
                      , bytestring
                      , attoparsec
                      , stm
                      , mtl
+                     , hourglass
+                     , cryptohash
+                     , directory
+                     , filepath
+                     , random
   default-language:    Haskell2010

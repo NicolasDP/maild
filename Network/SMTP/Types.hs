@@ -29,8 +29,8 @@ data Email = Email
     { mailClient :: String
     , mailFrom   :: String
     , mailTo     :: [String]
-    , mailData   :: BC.ByteString
-    } deriving (Show)
+    , mailData   :: FilePath
+    } deriving (Show, Read)
 
 -- | In the case of an address email: local-part@domain
 -- return local-part

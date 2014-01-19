@@ -31,13 +31,18 @@ import Control.Monad.State
 import qualified Data.ByteString.Char8     as BC
 
 import System.IO
+import System.FilePath  (FilePath, (</>))
+
+import Data.MailStorage
 
 data SMTPConfig = SMTPConfig
     { smtpPort       :: Int
     , smtpDomainName :: String
     , smtpMaxClients :: Int
-    , smtpMailDir    :: FilePath
-    } deriving (Show, Read, Eq)
+    , mailStorageDir :: FilePath
+    , userIdentify   :: SMTPConfig -> String -> Maybe String -> IO Bool
+    , userVerify     :: SMTPConfig -> String -> IO [String]
+    }
 
 ------------------------------------------------------------------------------
 --                               SMTPChan                                   --
@@ -68,18 +73,24 @@ getNextEmail = atomically . readTChan
 acceptClient :: SMTPConfig -> Handle -> SMTPChan -> IO ()
 acceptClient config h chan = do
     respond220 h (smtpDomainName config)
-    clientLoop [] [] []
+    clientLoop [] [] [] ""
     where
-        clientLoop :: String -> String -> [String] -> IO ()
-        clientLoop client from to = do
-            (err, email) <- runStateT (commandProcessor config h) (Email client from to BC.empty)
+        clientLoop :: String -> String -> [String] -> FilePath -> IO ()
+        clientLoop client from to fpath = do
+            (err, email) <- runStateT (commandProcessor config h) (Email client from to fpath)
             case err of
-                CPQUIT  -> closeHandle config h
-                CPRESET -> clientLoop [] [] [] -- clear the information
+                CPQUIT   -> closeHandle config h
+                CPRESET  -> clientLoop [] [] [] "" -- clear the information
                 -- RFC5321 (section DATA: 4.1.1.4): process the storage of an email after DATA command:
                 -- and clear the buffers (so restart a loop without any information)
-                CPEMAIL -> publishEmail chan email >> clientLoop [] [] []
-                CPAGAIN -> clientLoop (mailClient email) (mailFrom email) (mailTo email)
+                -- TODO: respond should be send only if the email storage has been processed properly
+                CPEMAIL  -> publishEmail chan email >> clientLoop [] [] [] ""
+                CPAGAIN  -> clientLoop (mailClient email) (mailFrom email) (mailTo email) (mailData email)
+                CPVRFY u -> do mails <- (userVerify config) config u
+                               case mails of
+                                    [] -> respond252 h
+                                    l  -> respond' h 250 l
+                               clientLoop (mailClient email) (mailFrom email) (mailTo email) (mailData email)
 
 -- | Reject a client:
 -- as described in RFC5321:
@@ -103,6 +114,11 @@ rejectClient config h = do
 
 respond :: Handle -> Int -> String -> IO ()
 respond h code msg = BC.hPutStrLn h $ BC.pack $ (show code) ++ " " ++ msg
+
+respond' h code []     = respond h code ""
+respond' h code [s]    = respond h code s
+respond' h code (s:xs) = do BC.hPutStrLn h $ BC.pack $ (show code) ++ "-" ++ s
+                            respond' h code xs
 
 -- Standard answer messages:
 respond500 h        = respond h 500 "Syntax error, command not recognized"
@@ -153,18 +169,26 @@ commandHandleRCPT h to = do
     modify (\s -> s { mailTo = (to:mailTo s) })
     liftIO $ respond250 h
 
-commandHandleDATA h = do
-    liftIO $ respond354 h -- say: go on! Don't be shy, give me your data
-    d <- liftIO $ readMailData h BC.empty
-    modify (\s -> s { mailData = d})
-    liftIO $ respond250 h
+commandHandleDATA h config = do
+    clientDomain <- gets (\s -> mailClient s)
+    fromEmail    <- gets (\s -> mailFrom   s)
+    filename     <- liftIO $ generateUniqueFilename clientDomain fromEmail
+    modify (\s -> s { mailData = filename })
+    liftIO $ do
+        respond354 h -- say: go on! Don't be shy, give me your data
+        BC.writeFile (incomingDir </> filename) BC.empty
+        readMailData h $ incomingDir </> filename
+        respond250 h
     where
+        mailDir     = mailStorageDir config
+        incomingDir = mailDir </> getIncomingDir
         -- TODO: insert a timestamp at the TOP of the Data content
-        readMailData h t = do
+        readMailData h p = do
             buff <- liftIO $ BC.hGetLine h
             if buff == BC.pack (".\r")
-                then return t
-                else readMailData h $ BC.concat [t, buff, BC.pack "\n"]
+                then return ()
+                else do BC.appendFile p $ BC.concat [buff, BC.pack "\n"]
+                        readMailData h p
 
 commandHandleRSET h = liftIO $ respond250 h
 
@@ -173,6 +197,7 @@ data CommandProcessorERROR
     | CPRESET
     | CPEMAIL
     | CPAGAIN
+    | CPVRFY String
 
 commandProcessor :: SMTPConfig -> Handle -> EmailS (CommandProcessorERROR)
 commandProcessor config h = do
@@ -181,7 +206,8 @@ commandProcessor config h = do
         Right (HELO client) -> commandHandleHELO h client >> commandProcessor config h
         Right (MAIL from)   -> commandHandleMAIL h from   >> commandProcessor config h
         Right (RCPT to)     -> commandHandleRCPT h to     >> commandProcessor config h
-        Right DATA          -> commandHandleDATA h        >> return CPEMAIL
+        Right (VRFY user)   -> return $ CPVRFY user
+        Right DATA          -> commandHandleDATA h config >> return CPEMAIL
         Right QUIT          -> return CPQUIT
         Right RSET          -> commandHandleRSET h        >> return CPRESET
         Right (INVALCMD _)  -> (liftIO $ respond500 h)    >> commandProcessor config h
