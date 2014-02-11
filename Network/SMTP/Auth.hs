@@ -20,10 +20,4 @@ data AuthType
     = PLAIN
     | LOGIN
     | CRAM_MD5
-    deriving (Eq)
-
-instance Show AuthType where
-    show PLAIN    = "PLAIN"
-    show LOGIN    = "LOGIN"
-    show CRAM_MD5 = "CRAM-MD5"
-
+    deriving (Read, Show, Eq)

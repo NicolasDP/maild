@@ -19,6 +19,12 @@ module Network.SMTP
     , rejectClient
       -- ** Helpers
     , respond
+      -- * SMTP Client
+    , SMTPConnection
+    , smtpInitConnection
+    , smtpSendCommand
+    , smtpSendString
+    , smtpReadResponses
     ) where
 
 import Network.SMTP.Types
@@ -34,6 +40,7 @@ import System.IO
 import System.FilePath  (FilePath, (</>))
 
 import Data.MailStorage
+import Data.List (find)
 
 data SMTPConfig = SMTPConfig
     { smtpPort       :: Int
@@ -113,11 +120,11 @@ rejectClient config h = do
 ------------------------------------------------------------------------------
 
 respond :: Handle -> Int -> String -> IO ()
-respond h code msg = BC.hPutStrLn h $ BC.pack $ (show code) ++ " " ++ msg
+respond h code msg = BC.hPutStrLn h $ BC.pack $ (show code) ++ " " ++ msg ++ "\r"
 
-respond' h code []     = respond h code ""
-respond' h code [s]    = respond h code s
-respond' h code (s:xs) = do BC.hPutStrLn h $ BC.pack $ (show code) ++ "-" ++ s
+respond' h code []     =    BC.hPutStrLn h $ BC.pack $ (show code) ++ "\r"
+respond' h code [s]    =    respond h code s
+respond' h code (s:xs) = do BC.hPutStrLn h $ BC.pack $ (show code) ++ "-" ++ s ++ "\r"
                             respond' h code xs
 
 -- Standard answer messages:
@@ -210,6 +217,87 @@ commandProcessor config h = do
         Right DATA          -> commandHandleDATA h config >> return CPEMAIL
         Right QUIT          -> return CPQUIT
         Right RSET          -> commandHandleRSET h        >> return CPRESET
+        Right (NOOP _)      -> (liftIO $ respond250 h)    >> commandProcessor config h
         Right (INVALCMD _)  -> (liftIO $ respond500 h)    >> commandProcessor config h
         Right _             -> (liftIO $ respond502 h)    >> commandProcessor config h
-        Left _              -> liftIO $ respond500 h      >> return CPAGAIN
+        Left _              -> (liftIO $ respond500 h)    >> return CPAGAIN
+        
+------------------------------------------------------------------------------
+--                               SMTPClient                                 --
+------------------------------------------------------------------------------
+
+data SMTPConnection = SMTPConnection
+    { handle :: Handle
+    } deriving (Eq)
+
+-- | Close the given SMTP Connection and return the handle
+-- the server has certainly closed the connection, but let user manages it
+smtpCloseConnection :: SMTPConnection
+                    -> IO Handle
+smtpCloseConnection (SMTPConnection h) =
+    smtpSendCommand QUIT (SMTPConnection h) >> return h
+
+-- | After opening a socket, here is the way to know if the server is
+-- providing an SMTP service (you still need to parse the return value)
+smtpInitConnection :: Handle
+                   -> IO (Either Response SMTPConnection)
+smtpInitConnection h = do
+    -- when client connects to server, server immediately returns a code.
+    -- ok (220) or ko (554)
+    respl <- smtpReadResponses $ SMTPConnection h
+    return $ checkResponseList (head respl) [RC220ServiceReady]
+    where
+        checkResponseList :: Either String Response
+                          -> [ResponseCode] -- ^ expected one
+                          -> Either Response SMTPConnection
+        checkResponseList r expected =
+            case r of
+                Left err   -> error err
+                Right resp ->
+                    case find (checkResponseCode $ code resp) expected of
+                        Nothing -> Left resp
+                        Just r' -> Right $ SMTPConnection h
+
+        checkResponseCode :: Either Int ResponseCode
+                          -> ResponseCode
+                          -> Bool
+        checkResponseCode (Left  _) _ = False
+        checkResponseCode (Right c) e = c == e
+
+
+smtpSendCommand :: Command
+                -> SMTPConnection
+                -> IO [Either String Response]
+smtpSendCommand (HELO domain) h = smtpSendString h $ "HELO " ++ domain
+smtpSendCommand (EHLO domain) h = smtpSendString h $ "EHLO " ++ domain
+smtpSendCommand (MAIL from)   h = smtpSendString h $ "MAIL FROM:<" ++ from ++ ">"
+smtpSendCommand (RCPT to)     h = smtpSendString h $ "RCPT TO:<" ++ to ++ ">"
+smtpSendCommand DATA          h = smtpSendString h "DATA"
+smtpSendCommand RSET          h = smtpSendString h "RSET"
+smtpSendCommand QUIT          h = smtpSendString h "QUIT"
+smtpSendCommand (NOOP s)      h = smtpSendString h $ "NOOP" ++ (maybe [] (\ss -> " " ++ ss) s)
+smtpSendCommand (HELP s)      h = smtpSendString h $ "HELP" ++ (maybe [] (\ss -> " " ++ ss) s)
+smtpSendCommand (EXPN arg)    h = smtpSendString h $ "EXPN " ++ arg
+smtpSendCommand (VRFY arg)    h = smtpSendString h $ "VRFY " ++ arg
+-- miss: AUTH
+smtpSendCommand cmd           _ = return $ [Left $ "not supported yet: " ++ (show cmd)]
+
+-- | Send a specific string to the server
+-- no need to add the command line terminal chars (CRLF) they will be append
+smtpSendString :: SMTPConnection -- ^ the connected socket
+               -> String         -- ^ the command to send
+               -> IO [Either String Response]
+smtpSendString (SMTPConnection h) msg = do
+    BC.hPutStrLn h $ BC.pack $ msg ++ "\r"
+    smtpReadResponses $ SMTPConnection h
+
+smtpReadResponses :: SMTPConnection
+                  -> IO [Either String Response]
+smtpReadResponses (SMTPConnection h) = do
+    buff <- BC.hGetLine h 
+    case parseResponseByteString buff of
+        Left err -> return $ [Left err]
+        Right r  -> do
+            if endOfResponse r
+                then return [Right r]
+                else smtpReadResponses (SMTPConnection h) >>= \rs -> return $ (Right r):rs

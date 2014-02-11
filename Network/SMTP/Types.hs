@@ -8,12 +8,18 @@
 --
 {-# LANGUAGE OverloadedStrings #-}
 module Network.SMTP.Types
-    ( Command(..)
+    ( -- * Commands
+      Command(..)
     , Email(..)
     , parseCommandByteString
     , parseCommandString
     , getLocalPart
     , getDomainPart
+      -- * Responses
+    , Response(..)
+    , ResponseCode(..)
+    , parseResponseByteString
+    , parseResponseString
     ) where
 
 import qualified Data.ByteString.Char8 as BC
@@ -42,6 +48,10 @@ getLocalPart = L.takeWhile (\c -> c /= '@')
 getDomainPart :: String -> String
 getDomainPart = L.dropWhile (\c -> c /= '@')
 
+------------------------------------------------------------------------------
+--                               Commands                                   --
+------------------------------------------------------------------------------
+
 data Command
     = HELO String
     | EHLO String
@@ -50,29 +60,13 @@ data Command
     | DATA
     | EXPN String
     | VRFY String
-    | HELP [String]
+    | HELP (Maybe String)
     | AUTH AuthType UserName Password
-    | NOOP 
+    | NOOP (Maybe String)
     | RSET
     | QUIT
     | INVALCMD String
-    deriving (Eq)
-
-instance Show Command where
-    show (HELO s)     = "HELO "       ++ s
-    show (EHLO s)     = "EHLO "       ++ s
-    show (MAIL s)     = "MAIL FROM:<" ++ s ++ ">"
-    show (RCPT s)     = "RCPT TO:<"   ++ s ++ ">"
-    show DATA         = "DATA"
-    show (EXPN s)     = "EXPN "       ++ s
-    show (VRFY s)     = "VRFY "       ++ s
-    show (HELP [])    = "HELP"
-    show (HELP l)     = "HELP " ++ (intercalate " " l)
-    show (AUTH t u p) = "AUTH " ++ (show t) ++ " " ++ (BC.unpack u) ++ " ********"
-    show NOOP         = "NOOP"
-    show RSET         = "RSET"
-    show QUIT         = "QUIT"
-    show (INVALCMD s) = "INVALCMD " ++ (show s)
+    deriving (Show, Read, Eq)
 
 parseString :: Parser String
 parseString = AC.many' $ do
@@ -82,8 +76,8 @@ parseString = AC.many' $ do
 skipEndOfLine :: Parser ()
 skipEndOfLine = char '\r' >> return ()
 
-parsePath :: Parser BC.ByteString
-parsePath = takeWhile1 $ \c -> c /= '>'
+parseParameterPath :: Parser BC.ByteString
+parseParameterPath = takeWhile1 $ \c -> c /= '>'
 
 parseCommandHELO :: Parser String
 parseCommandHELO = do
@@ -100,7 +94,7 @@ parseCommandMAIL = do
     char ' '
     string <- "FROM:"
     char '<'
-    mail <- parsePath
+    mail <- parseParameterPath
     char '>'
     skipEndOfLine
     return $ BC.unpack mail
@@ -110,24 +104,35 @@ parseCommandRCPT = do
     char ' '
     string <- "TO:"
     char '<'
-    mail <- parsePath
+    mail <- parseParameterPath
     char '>'
     skipEndOfLine
     return $ BC.unpack mail
 
 parseCommandEXPN :: Parser String
-parseCommandEXPN = undefined
+parseCommandEXPN = parseParameterString
 
 parseCommandVRFY :: Parser String
-parseCommandVRFY = undefined
+parseCommandVRFY = parseParameterString
 
-parseCommandHelp :: Parser [String]
-parseCommandHelp = do
-    c1 <- anyChar
-    case c1 of
-        ' '  -> do parseString >>= \l -> parseCommandHelp >>= \ls -> return $ l:ls
-        '\n' -> do char '\r' >>= \_ -> return []
-        _    -> error $ "Unexpected character: '" ++ [c1] ++ "'"
+parseCommandNOOP :: Parser (Maybe String)
+parseCommandNOOP = parseParameterMaybeString
+
+parseCommandHELP :: Parser (Maybe String)
+parseCommandHELP = parseParameterMaybeString
+
+parseParameterMaybeString :: Parser (Maybe String)
+parseParameterMaybeString =
+    skipEndOfLine >> return Nothing
+    <|> do s <- parseParameterString
+           return $ Just s
+
+parseParameterString :: Parser String
+parseParameterString = do
+    char ' '
+    param <- AC.many' $ satisfy $ \c -> isAlphaNum c || c == '.' || c == '-'
+    skipEndOfLine
+    return param
 
 parseCommand :: Parser Command
 parseCommand = do
@@ -141,9 +146,9 @@ parseCommand = do
         "DATA" -> skipEndOfLine >> return DATA
         "EXPN" -> parseCommandEXPN >>= \s -> return $ EXPN s
         "VRFY" -> parseCommandVRFY >>= \s -> return $ VRFY s
-        "HELP" -> parseCommandHelp >>= \l -> return $ HELP l
+        "HELP" -> parseCommandHELP >>= \l -> return $ HELP l
         "AUTH" -> undefined
-        "NOOP" -> skipEndOfLine >> return NOOP
+        "NOOP" -> parseCommandNOOP >>= \s -> return $ NOOP s
         "RSET" -> skipEndOfLine >> return RSET
         "QUIT" -> skipEndOfLine >> return QUIT
         s      -> return $ INVALCMD s
@@ -153,3 +158,90 @@ parseCommandString s = parseCommandByteString $ BC.pack s
 
 parseCommandByteString :: BC.ByteString -> Either String Command
 parseCommandByteString bs = parseOnly parseCommand bs
+
+------------------------------------------------------------------------------
+--                               Response                                   --
+------------------------------------------------------------------------------
+
+data ResponseCode
+    = RC500SyntaxCommandError
+    | RC501SyntaxParameterError
+    | RC502CommandNotImplemented
+    | RC503BadSequenceOfCommand
+    | RC504ParameterNotImplemented
+    | RC211SystemStatus
+    | RC214Help
+    | RC220ServiceReady
+    | RC221ServiceClosingChannel
+    | RC421ServiceNotAvailable
+    | RC250Ok
+    | RC251UserNotLocalButTry
+    | RC252CannotVRFYUser
+    | RC455ServerUnableToAccParrameters
+    | RC555FromOrToError
+    | RC450MailActionRejectedMailboxUnavailable
+    | RC550ActionRejectedMailboxUnavailable
+    | RC451ActionAborted
+    | RC551UserNotLocalFail
+    | RC452ActionRejectedSystemStorage
+    | RC552MailActionAbbortedSystemStorage
+    | RC553ActionRejectedMailboxNotAllowed
+    | RC354StartMailInput
+    | RC554Failed
+	deriving (Show, Read, Eq)
+
+intToResponseCode :: Int -> Either Int ResponseCode
+intToResponseCode 500 = Right RC500SyntaxCommandError
+intToResponseCode 501 = Right RC501SyntaxParameterError
+intToResponseCode 502 = Right RC502CommandNotImplemented
+intToResponseCode 503 = Right RC503BadSequenceOfCommand
+intToResponseCode 504 = Right RC504ParameterNotImplemented
+intToResponseCode 211 = Right RC211SystemStatus
+intToResponseCode 214 = Right RC214Help
+intToResponseCode 220 = Right RC220ServiceReady
+intToResponseCode 221 = Right RC221ServiceClosingChannel
+intToResponseCode 421 = Right RC421ServiceNotAvailable
+intToResponseCode 250 = Right RC250Ok
+intToResponseCode 251 = Right RC251UserNotLocalButTry
+intToResponseCode 252 = Right RC252CannotVRFYUser
+intToResponseCode 455 = Right RC455ServerUnableToAccParrameters
+intToResponseCode 555 = Right RC555FromOrToError
+intToResponseCode 450 = Right RC450MailActionRejectedMailboxUnavailable
+intToResponseCode 550 = Right RC550ActionRejectedMailboxUnavailable
+intToResponseCode 451 = Right RC451ActionAborted
+intToResponseCode 551 = Right RC551UserNotLocalFail
+intToResponseCode 452 = Right RC452ActionRejectedSystemStorage
+intToResponseCode 552 = Right RC552MailActionAbbortedSystemStorage
+intToResponseCode 553 = Right RC553ActionRejectedMailboxNotAllowed
+intToResponseCode 354 = Right RC354StartMailInput
+intToResponseCode 554 = Right RC554Failed
+intToResponseCode  i  = Left i
+
+-- As described in a RFC5321, a response is a CODE with message
+-- see section 4.2.1
+data Response = Response
+    { code          :: Either Int ResponseCode
+    , message       :: BC.ByteString
+    , endOfResponse :: Bool
+    } deriving (Show)
+
+parseResponseLine :: Char -- SP character (' '  or '-'  )
+                  -> Bool -- End of resp  (True or False)
+                  -> Parser Response
+parseResponseLine c bool = do
+    xyz <- count 3 digit
+    char c
+    line <- AC.takeWhile $ \c -> c /= '\r'
+    skipEndOfLine
+    return $ Response (intToResponseCode $ read xyz) line bool
+
+parseResponse :: Parser Response
+parseResponse
+    =   parseResponseLine ' ' True
+    <|> parseResponseLine '-' False
+
+parseResponseString :: String -> Either String Response
+parseResponseString s = parseResponseByteString $ BC.pack s
+
+parseResponseByteString :: BC.ByteString -> Either String Response
+parseResponseByteString bs = parseOnly parseResponse bs
