@@ -18,71 +18,44 @@ import System.FilePath  (FilePath, (</>))
 import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar
 
-defaultSMTPServerConfig :: SMTPConfig
-defaultSMTPServerConfig =
-    SMTPConfig
-        25          -- listen on SMTP port
-        "localhost" -- domain name of this service
-        10          -- number of simultaneous connections authorized
-        "/tmp"
-        (\_ _ _ -> return True)  -- Accept all the connections
-        undefined   -- Mandatory: define it!
+verifySMTPUser :: SMTPConfig -> String -> IO [MailUser]
+verifySMTPUser config name = return $ findMailUsers name $ storageDir config
 
-identifySMTPUser :: SMTPConfig
-                 -> String
-                 -> Maybe String
-                 -> IO Bool
-identifySMTPUser config login passwd = undefined
-{-
-    muser <- getUser (smtpMailDir config) login
-    case muser of
-        Nothing   -> return False
-        Just user -> checkUserPassword user
-    where
-        checkUserPassword :: User -> IO Bool
-        checkUserPassword _ = return True -- TODO: check the User's digest file
--}
-
-verifySMTPUser :: SMTPConfig -> String -> IO [String]
-verifySMTPUser config name = undefined
-{-
-    getUser (smtpMailDir config) name >>= \muser ->
-        case muser of
-            Just user -> return [(userLogin user) ++ "@" ++ (smtpDomainName config)]
-            Nothing   -> return []
--}
+expandSMTPUser :: SMTPConfig -> String -> IO [MailUser]
+expandSMTPUser config name = undefined
 
 main = do
     args <- getArgs
     case args of
         ["port", p, "domain", d, "connections", c, "dir", dir] -> do
-                       isMD <- isMailStorageDir dir
-                       if not isMD then initMailStorageDir dir else return ()
+                       mMailStorage <- getMailStorage dir
+                       mailStorage <- case mMailStorage of
+                                         Nothing -> initMailStorageDir dir
+                                         Just ms -> return ms
                        startSMTPServer $ SMTPConfig
                                             (read p)
                                             d
                                             (read c)
-                                            dir
-                                            identifySMTPUser
+                                            mailStorage
                                             verifySMTPUser
-        ["default"] -> startSMTPServer defaultSMTPServerConfig
+                                            expandSMTPUser
         _           -> putStrLn "usage: [port <port> domain <domain> connections <connections> maildir <dir>] | default"
 
 startSMTPServer config = do
     smtpChan <- newSMTPChan 
-    forkIO $ recvLoop (mailStorageDir config) smtpChan
+    forkIO $ recvLoop (storageDir config) smtpChan
     runServerOnPort config smtpChan
 
-recvLoop dir smtpChan = do
+recvLoop storageConfig smtpChan = do
     email <- getNextEmail smtpChan
     -- We received a new email. So, move it from *incoming* directory to
     -- *fordelivery* directory
-    fromIncomingToFordelivery dir $ mailData email
+    fromIncomingToFordelivery storageConfig $ mailData email
     -- now we need to notify the mail manager to require him to deliver the
     -- message to the corresponding mail box or! to forward it to an other
     -- postfix server
     -- TODO: deliverEmail mailManagerChan
-    recvLoop dir smtpChan
+    recvLoop storageConfig smtpChan
 
 ------------------------------------------------------------------------------
 --                          SMTP-Server: MainLoop                           --

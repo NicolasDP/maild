@@ -46,9 +46,9 @@ data SMTPConfig = SMTPConfig
     { smtpPort       :: Int
     , smtpDomainName :: String
     , smtpMaxClients :: Int
-    , mailStorageDir :: FilePath
-    , userIdentify   :: SMTPConfig -> String -> Maybe String -> IO Bool
-    , userVerify     :: SMTPConfig -> String -> IO [String]
+    , storageDir     :: MailStorage
+    , userVerify     :: SMTPConfig -> String -> IO [MailUser]
+    , userExpand     :: SMTPConfig -> String -> IO [MailUser]
     }
 
 ------------------------------------------------------------------------------
@@ -96,8 +96,13 @@ acceptClient config h chan = do
                 CPVRFY u -> do mails <- (userVerify config) config u
                                case mails of
                                     [] -> respond252 h
-                                    l  -> respond' h 250 l
+                                    l  -> respond' h 250 $ userMailToVRFY l $ smtpDomainName config
                                clientLoop (mailClient email) (mailFrom email) (mailTo email) (mailData email)
+
+        userMailToVRFY :: [MailUser] -> String -> [String]
+        userMailToVRFY []        _      = []
+        userMailToVRFY (user:xs) domain = userString:(userMailToVRFY xs domain)
+            where userString = (firstName user) ++ " " ++ (lastName user) ++ " <" ++ (emailAddr user) ++ "@" ++ domain ++ ">"
 
 -- | Reject a client:
 -- as described in RFC5321:
@@ -186,13 +191,12 @@ commandHandleDATA h config = do
     filename     <- liftIO $ generateUniqueFilename clientDomain fromEmail
     modify (\s -> s { mailData = filename })
     liftIO $ do
+        let filepath = (incomingDir $ storageDir config) </> filename
         respond354 h -- say: go on! Don't be shy, give me your data
-        BC.writeFile (incomingDir </> filename) BC.empty
-        readMailData h $ incomingDir </> filename
+        BC.writeFile filepath BC.empty
+        readMailData h filepath
         respond250 h
     where
-        mailDir     = mailStorageDir config
-        incomingDir = mailDir </> getIncomingDir
         -- TODO: insert a timestamp at the TOP of the Data content
         readMailData h p = do
             buff <- liftIO $ BC.hGetLine h
