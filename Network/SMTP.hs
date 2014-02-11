@@ -164,7 +164,11 @@ closeHandle config h = respond221 h (smtpDomainName config) >> hClose h
 type EmailS a = StateT Email IO a
 
 commandHandleHELO h client = do
-    modify (\s -> s { mailClient = client })
+    pClient <- gets (\s -> mailClient s)
+    let modifier = if not $ null pClient
+                        then \_ -> Email client [] [] ""
+                        else \s -> s { mailClient = client }
+    modify modifier
     liftIO $ respond250 h
 
 commandHandleMAIL h from = do
