@@ -11,6 +11,10 @@ module Network.SMTP.Types
     ( -- * Commands
       Command(..)
     , Email(..)
+    , Path(..)
+    , showPath
+    , ForwardPath(..)
+    , ReversePath(..)
     , parseCommandByteString
     , parseCommandString
     , getLocalPart
@@ -32,10 +36,10 @@ import Control.Applicative ((<|>))
 import Network.SMTP.Auth
 
 data Email = Email
-    { mailClient :: String
-    , mailFrom   :: String
-    , mailTo     :: [String]
-    , mailData   :: FilePath
+    { mailClient   :: String
+    , mailFrom     :: ReversePath
+    , mailTo       :: [ForwardPath]
+    , mailData     :: FilePath
     } deriving (Show, Read)
 
 -- | In the case of an address email: local-part@domain
@@ -52,11 +56,25 @@ getDomainPart = L.dropWhile (\c -> c /= '@')
 --                               Commands                                   --
 ------------------------------------------------------------------------------
 
+data Path = Path [String] String
+    deriving (Show, Read, Eq)
+
+showPath :: Path -> String
+showPath (Path adl from) = "<" ++ showADL ++ from ++ ">"
+    where
+        showADL = if null adl then "" else showADL' adl
+        showADL' :: [String] -> String
+        showADL' [ad]    = "@" ++ (show ad) ++ ":"
+        showADL' (ad:xs) = "@" ++ (show ad) ++ "," ++ (showADL' xs)
+
+type ForwardPath = Path
+type ReversePath = Path
+
 data Command
     = HELO String
     | EHLO String
-    | MAIL String
-    | RCPT String
+    | MAIL ReversePath
+    | RCPT ForwardPath
     | DATA
     | EXPN String
     | VRFY String
@@ -89,25 +107,63 @@ parseCommandHELO = do
 parseCommandEHLO :: Parser String
 parseCommandEHLO = parseCommandHELO
 
-parseCommandMAIL :: Parser String
+parseAtDomainList :: Parser [String]
+parseAtDomainList =
+    do char '@'
+       ad <- parseDomain
+       list <- parseAtDomainList'
+       return $ ad:list
+    <|> return []
+    where
+        parseAtDomainList' :: Parser [String]
+        parseAtDomainList' =
+            do char ','
+               parseAtDomainList
+            <|> do char ':'
+                   return []
+
+parseDomain :: Parser String
+parseDomain = AC.many' $ satisfy $ \c -> isAlphaNum c || c == '.' || c == '-'
+
+parseLocalPart :: Parser String
+parseLocalPart = parseDomain
+
+parseMailBox :: Parser String
+parseMailBox = do
+    local <- parseLocalPart
+    char '@'
+    domain <- parseDomain
+    return $ local ++ "@" ++ domain
+
+parsePath :: Parser Path
+parsePath = do
+    char '<'
+    list <- parseAtDomainList
+    mail <- parseMailBox
+    char '>'
+    return $ Path list mail
+
+parseReversePath :: Parser ReversePath
+parseReversePath = parsePath
+
+parseForwardPath :: Parser ForwardPath
+parseForwardPath = parsePath
+
+parseCommandMAIL :: Parser ReversePath
 parseCommandMAIL = do
     char ' '
     string <- "FROM:"
-    char '<'
-    mail <- parseParameterPath
-    char '>'
+    mail <- parseReversePath
     skipEndOfLine
-    return $ BC.unpack mail
+    return mail
 
-parseCommandRCPT :: Parser String
+parseCommandRCPT :: Parser ForwardPath
 parseCommandRCPT = do
     char ' '
     string <- "TO:"
-    char '<'
-    mail <- parseParameterPath
-    char '>'
+    mail <- parseForwardPath
     skipEndOfLine
-    return $ BC.unpack mail
+    return mail
 
 parseCommandEXPN :: Parser String
 parseCommandEXPN = parseParameterString

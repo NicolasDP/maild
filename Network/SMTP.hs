@@ -74,24 +74,27 @@ getNextEmail = atomically . readTChan
 --                               Handling Clients                           --
 ------------------------------------------------------------------------------
 
+emptyReversePath :: ReversePath
+emptyReversePath = Path [] []
+
 -- | Accept a client, and communicate with him to get emails.
 -- -1- send code 221 ;
 -- -2- read/answer any commands
 acceptClient :: SMTPConfig -> Handle -> SMTPChan -> IO ()
 acceptClient config h chan = do
     respond220 h (smtpDomainName config)
-    clientLoop [] [] [] ""
+    clientLoop [] emptyReversePath [] ""
     where
-        clientLoop :: String -> String -> [String] -> FilePath -> IO ()
+        clientLoop :: String -> ReversePath -> [ForwardPath] -> FilePath -> IO ()
         clientLoop client from to fpath = do
             (err, email) <- runStateT (commandProcessor config h) (Email client from to fpath)
             case err of
                 CPQUIT   -> closeHandle config h
-                CPRESET  -> clientLoop [] [] [] "" -- clear the information
+                CPRESET  -> clientLoop [] emptyReversePath [] "" -- clear the information
                 -- RFC5321 (section DATA: 4.1.1.4): process the storage of an email after DATA command:
                 -- and clear the buffers (so restart a loop without any information)
                 -- TODO: respond should be send only if the email storage has been processed properly
-                CPEMAIL  -> publishEmail chan email >> clientLoop [] [] [] ""
+                CPEMAIL  -> publishEmail chan email >> clientLoop [] emptyReversePath [] ""
                 CPAGAIN  -> clientLoop (mailClient email) (mailFrom email) (mailTo email) (mailData email)
                 CPVRFY u -> do mails <- (userVerify config) config u
                                case mails of
@@ -171,7 +174,7 @@ type EmailS a = StateT Email IO a
 commandHandleHELO h client = do
     pClient <- gets (\s -> mailClient s)
     let modifier = if not $ null pClient
-                        then \_ -> Email client [] [] ""
+                        then \_ -> Email client emptyReversePath [] ""
                         else \s -> s { mailClient = client }
     modify modifier
     liftIO $ respond250 h
@@ -188,7 +191,7 @@ commandHandleRCPT h to = do
 commandHandleDATA h config = do
     clientDomain <- gets (\s -> mailClient s)
     fromEmail    <- gets (\s -> mailFrom   s)
-    filename     <- liftIO $ generateUniqueFilename clientDomain fromEmail
+    filename     <- liftIO $ generateUniqueFilename clientDomain (show $ fromEmail)
     modify (\s -> s { mailData = filename })
     liftIO $ do
         let filepath = (incomingDir $ storageDir config) </> filename
@@ -278,8 +281,8 @@ smtpSendCommand :: Command
                 -> IO [Either String Response]
 smtpSendCommand (HELO domain) h = smtpSendString h $ "HELO " ++ domain
 smtpSendCommand (EHLO domain) h = smtpSendString h $ "EHLO " ++ domain
-smtpSendCommand (MAIL from)   h = smtpSendString h $ "MAIL FROM:<" ++ from ++ ">"
-smtpSendCommand (RCPT to)     h = smtpSendString h $ "RCPT TO:<" ++ to ++ ">"
+smtpSendCommand (MAIL from)   h = smtpSendString h $ "MAIL FROM:" ++ (showPath from)
+smtpSendCommand (RCPT to)     h = smtpSendString h $ "RCPT TO:" ++ (showPath to)
 smtpSendCommand DATA          h = smtpSendString h "DATA"
 smtpSendCommand RSET          h = smtpSendString h "RSET"
 smtpSendCommand QUIT          h = smtpSendString h "QUIT"
