@@ -12,6 +12,7 @@ module Network.SMTP.Types
       Command(..)
     , Email(..)
     , Path(..)
+    , EmailAddress(..)
     , showPath
     , ForwardPath(..)
     , ReversePath(..)
@@ -40,7 +41,8 @@ data Email = Email
     , mailFrom     :: ReversePath
     , mailTo       :: [ForwardPath]
     , mailData     :: FilePath
-    } deriving (Show, Read)
+    , identified   :: Bool
+    } deriving (Show, Eq)
 
 -- | In the case of an address email: local-part@domain
 -- return local-part
@@ -56,11 +58,19 @@ getDomainPart = L.dropWhile (\c -> c /= '@')
 --                               Commands                                   --
 ------------------------------------------------------------------------------
 
-data Path = Path [String] String
-    deriving (Show, Read, Eq)
+type Domain = String
+type LocalPart = String
+
+data EmailAddress = EmailAddress LocalPart Domain
+    deriving (Eq)
+instance Show EmailAddress where
+    show (EmailAddress local domain) = local ++ "@" ++ domain
+
+data Path = Path [Domain] EmailAddress
+    deriving (Show, Eq)
 
 showPath :: Path -> String
-showPath (Path adl from) = "<" ++ showADL ++ from ++ ">"
+showPath (Path adl from) = "<" ++ showADL ++ (show from) ++ ">"
     where
         showADL = if null adl then "" else showADL' adl
         showADL' :: [String] -> String
@@ -84,7 +94,7 @@ data Command
     | RSET
     | QUIT
     | INVALCMD String
-    deriving (Show, Read, Eq)
+    deriving (Show, Eq)
 
 parseString :: Parser String
 parseString = AC.many' $ do
@@ -107,7 +117,7 @@ parseCommandHELO = do
 parseCommandEHLO :: Parser String
 parseCommandEHLO = parseCommandHELO
 
-parseAtDomainList :: Parser [String]
+parseAtDomainList :: Parser [Domain]
 parseAtDomainList =
     do char '@'
        ad <- parseDomain
@@ -122,18 +132,18 @@ parseAtDomainList =
             <|> do char ':'
                    return []
 
-parseDomain :: Parser String
+parseDomain :: Parser Domain
 parseDomain = AC.many' $ satisfy $ \c -> isAlphaNum c || c == '.' || c == '-'
 
-parseLocalPart :: Parser String
+parseLocalPart :: Parser LocalPart
 parseLocalPart = parseDomain
 
-parseMailBox :: Parser String
+parseMailBox :: Parser EmailAddress
 parseMailBox = do
     local <- parseLocalPart
     char '@'
     domain <- parseDomain
-    return $ local ++ "@" ++ domain
+    return $ EmailAddress local domain
 
 parsePath :: Parser Path
 parsePath = do

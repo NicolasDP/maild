@@ -75,7 +75,16 @@ getNextEmail = atomically . readTChan
 ------------------------------------------------------------------------------
 
 emptyReversePath :: ReversePath
-emptyReversePath = Path [] []
+emptyReversePath = Path [] (EmailAddress [] [])
+
+defaultEmail :: Bool -> Email
+defaultEmail isLogon = Email
+                { mailClient = []
+                , mailFrom   = emptyReversePath
+                , mailTo     = []
+                , mailData   = []
+                , identified = isLogon
+                }
 
 -- | Accept a client, and communicate with him to get emails.
 -- -1- send code 221 ;
@@ -83,24 +92,24 @@ emptyReversePath = Path [] []
 acceptClient :: SMTPConfig -> Handle -> SMTPChan -> IO ()
 acceptClient config h chan = do
     respond220 h (smtpDomainName config)
-    clientLoop [] emptyReversePath [] ""
+    clientLoop $ defaultEmail False
     where
-        clientLoop :: String -> ReversePath -> [ForwardPath] -> FilePath -> IO ()
-        clientLoop client from to fpath = do
-            (err, email) <- runStateT (commandProcessor config h) (Email client from to fpath)
+        clientLoop :: Email -> IO ()
+        clientLoop email = do
+            (err, email) <- runStateT (commandProcessor config h) email
             case err of
                 CPQUIT   -> closeHandle config h
-                CPRESET  -> clientLoop [] emptyReversePath [] "" -- clear the information
+                CPRESET  -> clientLoop $ defaultEmail (identified email)
                 -- RFC5321 (section DATA: 4.1.1.4): process the storage of an email after DATA command:
                 -- and clear the buffers (so restart a loop without any information)
                 -- TODO: respond should be send only if the email storage has been processed properly
-                CPEMAIL  -> publishEmail chan email >> clientLoop [] emptyReversePath [] ""
-                CPAGAIN  -> clientLoop (mailClient email) (mailFrom email) (mailTo email) (mailData email)
+                CPEMAIL  -> publishEmail chan email >> clientLoop (defaultEmail $ identified email)
+                CPAGAIN  -> clientLoop email
                 CPVRFY u -> do mails <- (userVerify config) config u
                                case mails of
                                     [] -> respond252 h
                                     l  -> respond' h 250 $ userMailToVRFY l $ smtpDomainName config
-                               clientLoop (mailClient email) (mailFrom email) (mailTo email) (mailData email)
+                               clientLoop email
 
         userMailToVRFY :: [MailUser] -> String -> [String]
         userMailToVRFY []        _      = []
@@ -174,7 +183,7 @@ type EmailS a = StateT Email IO a
 commandHandleHELO h client = do
     pClient <- gets (\s -> mailClient s)
     let modifier = if not $ null pClient
-                        then \_ -> Email client emptyReversePath [] ""
+                        then \s -> s { mailClient = client, mailFrom = emptyReversePath, mailTo = [], mailData = [] }
                         else \s -> s { mailClient = client }
     modify modifier
     liftIO $ respond250 h
@@ -183,8 +192,8 @@ commandHandleMAIL h from = do
     modify (\s -> s { mailFrom = from })
     liftIO $ respond250 h
 
-commandHandleRCPT h to = do
-    -- Check the destination and the relay
+commandHandleRCPT h to config = do
+    -- Check the domain is correct:
     modify (\s -> s { mailTo = (to:mailTo s) })
     liftIO $ respond250 h
 
@@ -221,18 +230,18 @@ commandProcessor :: SMTPConfig -> Handle -> EmailS (CommandProcessorERROR)
 commandProcessor config h = do
     buff <- liftIO $ BC.hGetLine h
     case parseCommandByteString $ BC.concat [buff, BC.pack "\n\r"] of
-        Right (HELO client) -> commandHandleHELO h client >> commandProcessor config h
-        Right (MAIL from)   -> commandHandleMAIL h from   >> commandProcessor config h
-        Right (RCPT to)     -> commandHandleRCPT h to     >> commandProcessor config h
+        Right (HELO client) -> commandHandleHELO h client    >> commandProcessor config h
+        Right (MAIL from)   -> commandHandleMAIL h from      >> commandProcessor config h
+        Right (RCPT to)     -> commandHandleRCPT h to config >> commandProcessor config h
         Right (VRFY user)   -> return $ CPVRFY user
-        Right DATA          -> commandHandleDATA h config >> return CPEMAIL
+        Right DATA          -> commandHandleDATA h config    >> return CPEMAIL
         Right QUIT          -> return CPQUIT
-        Right RSET          -> commandHandleRSET h        >> return CPRESET
-        Right (NOOP _)      -> (liftIO $ respond250 h)    >> commandProcessor config h
-        Right (INVALCMD _)  -> (liftIO $ respond500 h)    >> commandProcessor config h
-        Right _             -> (liftIO $ respond502 h)    >> commandProcessor config h
-        Left _              -> (liftIO $ respond500 h)    >> return CPAGAIN
-        
+        Right RSET          -> commandHandleRSET h           >> return CPRESET
+        Right (NOOP _)      -> (liftIO $ respond250 h)       >> commandProcessor config h
+        Right (INVALCMD _)  -> (liftIO $ respond500 h)       >> commandProcessor config h
+        Right _             -> (liftIO $ respond502 h)       >> commandProcessor config h
+        Left _              -> (liftIO $ respond500 h)       >> return CPAGAIN
+
 ------------------------------------------------------------------------------
 --                               SMTPClient                                 --
 ------------------------------------------------------------------------------
