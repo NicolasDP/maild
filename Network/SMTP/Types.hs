@@ -89,33 +89,58 @@ data Command
     | EXPN String
     | VRFY String
     | HELP (Maybe String)
-    | AUTH AuthType UserName Password
+    | AUTH AuthType (Maybe String)
     | NOOP (Maybe String)
     | RSET
     | QUIT
     | INVALCMD String
     deriving (Show, Eq)
 
-parseString :: Parser String
-parseString = AC.many' $ do
-        AC.letter_ascii
-    <|> (char '\\' >> anyChar)
-
-skipEndOfLine :: Parser ()
-skipEndOfLine = char '\r' >> return ()
-
-parseParameterPath :: Parser BC.ByteString
-parseParameterPath = takeWhile1 $ \c -> c /= '>'
-
-parseCommandHELO :: Parser String
-parseCommandHELO = do
+parseParameterString :: Parser String
+parseParameterString = do
     char ' '
     param <- AC.many' $ satisfy $ \c -> isAlphaNum c || c == '.' || c == '-'
     skipEndOfLine
     return param
 
-parseCommandEHLO :: Parser String
-parseCommandEHLO = parseCommandHELO
+parseParameterMaybeString :: Parser (Maybe String)
+parseParameterMaybeString =
+    do  skipEndOfLine
+        return Nothing
+    <|> do s <- parseParameterString
+           return $ Just s
+
+parseParameterB64String :: Parser String
+parseParameterB64String = do
+    char ' '
+    param <- AC.many' $ satisfy $ \c -> isAlphaNum c
+    char '='
+    skipEndOfLine
+    return $ param ++ "="
+
+parseParameterB64MaybeString :: Parser (Maybe String)
+parseParameterB64MaybeString =
+    do  skipEndOfLine
+        return Nothing
+    <|> do s <- parseParameterB64String
+           return $ Just s
+
+skipEndOfLine :: Parser ()
+skipEndOfLine = char '\r' >> return ()
+
+parseDomain :: Parser Domain
+parseDomain = AC.many' $ satisfy $ \c -> isAlphaNum c || c == '.' || c == '-'
+
+parseLocalPart :: Parser LocalPart
+parseLocalPart = parseDomain
+
+-- local-part@domain
+parseMailBox :: Parser EmailAddress
+parseMailBox = do
+    local <- parseLocalPart
+    char '@'
+    domain <- parseDomain
+    return $ EmailAddress local domain
 
 parseAtDomainList :: Parser [Domain]
 parseAtDomainList =
@@ -132,19 +157,6 @@ parseAtDomainList =
             <|> do char ':'
                    return []
 
-parseDomain :: Parser Domain
-parseDomain = AC.many' $ satisfy $ \c -> isAlphaNum c || c == '.' || c == '-'
-
-parseLocalPart :: Parser LocalPart
-parseLocalPart = parseDomain
-
-parseMailBox :: Parser EmailAddress
-parseMailBox = do
-    local <- parseLocalPart
-    char '@'
-    domain <- parseDomain
-    return $ EmailAddress local domain
-
 parsePath :: Parser Path
 parsePath = do
     char '<'
@@ -158,6 +170,16 @@ parseReversePath = parsePath
 
 parseForwardPath :: Parser ForwardPath
 parseForwardPath = parsePath
+
+parseCommandHELO :: Parser String
+parseCommandHELO = do
+    char ' '
+    param <- parseDomain
+    skipEndOfLine
+    return param
+
+parseCommandEHLO :: Parser String
+parseCommandEHLO = parseCommandHELO
 
 parseCommandMAIL :: Parser ReversePath
 parseCommandMAIL = do
@@ -184,21 +206,24 @@ parseCommandVRFY = parseParameterString
 parseCommandNOOP :: Parser (Maybe String)
 parseCommandNOOP = parseParameterMaybeString
 
+parseParameterAuthType :: Parser AuthType
+parseParameterAuthType = do
+    param <- AC.many' $ satisfy $ \c -> isAlphaNum c || c == '.' || c == '-'
+    return $ case map toUpper param of
+                "PLAIN"    -> PLAIN
+                "LOGIN"    -> LOGIN
+                "CRAM-MD5" -> CRAM_MD5
+                _          -> error $ "not supported auth type: " ++ param
+
+parseCommandAUTH :: Parser Command
+parseCommandAUTH = do
+    char ' '
+    authType <- parseParameterAuthType
+    param <- parseParameterB64MaybeString
+    return $ AUTH authType param
+
 parseCommandHELP :: Parser (Maybe String)
 parseCommandHELP = parseParameterMaybeString
-
-parseParameterMaybeString :: Parser (Maybe String)
-parseParameterMaybeString =
-    skipEndOfLine >> return Nothing
-    <|> do s <- parseParameterString
-           return $ Just s
-
-parseParameterString :: Parser String
-parseParameterString = do
-    char ' '
-    param <- AC.many' $ satisfy $ \c -> isAlphaNum c || c == '.' || c == '-'
-    skipEndOfLine
-    return param
 
 parseCommand :: Parser Command
 parseCommand = do
@@ -213,7 +238,7 @@ parseCommand = do
         "EXPN" -> parseCommandEXPN >>= \s -> return $ EXPN s
         "VRFY" -> parseCommandVRFY >>= \s -> return $ VRFY s
         "HELP" -> parseCommandHELP >>= \l -> return $ HELP l
-        "AUTH" -> undefined
+        "AUTH" -> parseCommandAUTH
         "NOOP" -> parseCommandNOOP >>= \s -> return $ NOOP s
         "RSET" -> skipEndOfLine >> return RSET
         "QUIT" -> skipEndOfLine >> return QUIT

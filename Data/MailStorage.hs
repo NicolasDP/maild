@@ -161,8 +161,12 @@ data MailUser = MailUser
     { emailAddr   :: String   -- ^ user's local-part address (local-part@server.foo)
     , firstName   :: String   -- ^ user first name
     , lastName    :: String   -- ^ user last name
+    , userDigest  :: String   -- ^ user identification digest
     , mailBoxPath :: FilePath -- ^ absolute file path to user's MailDir (/home/bar/mails)
     } deriving (Eq, Show, Read)
+
+defaultMailUser :: String -> MailUser
+defaultMailUser addr = MailUser addr [] [] [] ""
 
 type MailUserS a = StateT MailUser IO a
 
@@ -178,12 +182,13 @@ parseUserContentLine line =
         ("firstname", '=':r) -> modify $ \s -> s { firstName = read r }
         ("lastname",  '=':r) -> modify $ \s -> s { lastName  = read r }
         ("path",      '=':r) -> modify $ \s -> s { mailBoxPath = read r }
+        ("password",  '=':r) -> modify $ \s -> s { userDigest = read r }
         e                    -> error $ "unexpected line: " ++ (show line) ++ " --> " ++ (show e)
 
 parseMailUser :: FilePath -> IO MailUser
 parseMailUser filepath = do
     contentLines <- readFile filepath >>= \contents -> return $ lines contents
-    (_, userMail) <- runStateT (parseUserContent contentLines) (MailUser addr [] [] [])
+    (_, userMail) <- runStateT (parseUserContent contentLines) $ defaultMailUser addr
     return userMail
     where
         addr :: FilePath

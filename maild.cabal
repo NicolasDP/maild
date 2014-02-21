@@ -37,6 +37,7 @@ Library
                      , mtl
                      , hourglass
                      , cryptohash
+                     , base64-bytestring
                      , directory
                      , filepath
                      , random

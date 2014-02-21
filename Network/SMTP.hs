@@ -172,6 +172,7 @@ respond452 h        = respond h 452 "Requested action not taken: insufficient sy
 respond552 h        = respond h 552 "Requested mail action not aborted: exceeded storage allocation"
 respond553 h        = respond h 553 "Requested action not taken: mailbox name not allowed"
 
+respond334 h        = respond h 334 "Start auth input"
 respond354 h        = respond h 354 "Start mail input; end with <CRLF>.<CRLF>"
 respond554 h        = respond h 554 "Transaction failed or no SMTP Service here"
 
@@ -180,13 +181,26 @@ closeHandle config h = respond221 h (smtpDomainName config) >> hClose h
 
 type EmailS a = StateT Email IO a
 
-commandHandleHELO h client = do
+commandHandleHELO' h client = do
     pClient <- gets (\s -> mailClient s)
     let modifier = if not $ null pClient
                         then \s -> s { mailClient = client, mailFrom = emptyReversePath, mailTo = [], mailData = [] }
                         else \s -> s { mailClient = client }
     modify modifier
-    liftIO $ respond250 h
+
+commandHandleHELO h client = do
+    commandHandleHELO' h client
+    liftIO $ respond250 h 
+
+commandHandleEHLO h client = do
+    commandHandleHELO' h client
+    liftIO $
+        respond'
+            h
+            250
+            [ "Service ready"
+            , "AUTH PLAIN LOGIN CRAM-MD5"
+            ]
 
 commandHandleMAIL h from = do
     modify (\s -> s { mailFrom = from })
@@ -194,8 +208,47 @@ commandHandleMAIL h from = do
 
 commandHandleRCPT h to config = do
     -- Check the domain is correct:
-    modify (\s -> s { mailTo = (to:mailTo s) })
-    liftIO $ respond250 h
+    let Path _ (EmailAddress local domain) = to
+    isAuth <- gets (\s -> identified s)
+    if isAllowedRCPT local domain isAuth
+        then do modify (\s -> s { mailTo = (to:mailTo s) })
+                liftIO $ respond250 h
+        else liftIO $ respond551 h domain
+    where
+        isAllowedRCPT :: String -> String -> Bool -> Bool
+        isAllowedRCPT _     _      True  = True
+        isAllowedRCPT local domain False
+            | not (domain == (smtpDomainName config)) = False
+            | otherwise =
+                    case find (findUser local) (userAccounts $ storageDir config) of
+                        Nothing -> False
+                        Just _  -> True
+
+authentifyPlain :: Handle -> SMTPConfig -> BC.ByteString -> EmailS ()
+authentifyPlain h config buff =
+    case serverAuthPlain buff of
+        Left err         -> liftIO $ respond h 501 "5.5.2: cannot decode. Is it base64?"
+        Right (user, pw) ->
+            case find (findUser $ BC.unpack user) (userAccounts $ storageDir config) of
+                Nothing -> liftIO $ respond h 500 "cannot authenticate"
+                Just u  ->
+                    if userDigest u == BC.unpack pw
+                        then do modify (\s -> s { identified = True })
+                                liftIO $ respond h 235 "2.7.0 Authentication granted"
+                        else liftIO $ respond h 535 "Authentication failed"
+
+findUser :: String -> MailUser -> Bool
+findUser login u = login == (emailAddr u)
+
+commandHandleAUTH :: Handle -> SMTPConfig -> AuthType -> Maybe String -> EmailS ()
+commandHandleAUTH h config PLAIN mTxt =
+    case mTxt of
+        Nothing -> do liftIO $ respond334 h
+                      buff <- liftIO $ BC.hGetLine h
+                      authentifyPlain h config buff
+        Just t  -> authentifyPlain h config $ BC.pack t
+commandHandleAUTH h config authType mTxt =
+    liftIO $ respond504 h
 
 commandHandleDATA h config = do
     clientDomain <- gets (\s -> mailClient s)
@@ -231,16 +284,18 @@ commandProcessor config h = do
     buff <- liftIO $ BC.hGetLine h
     case parseCommandByteString $ BC.concat [buff, BC.pack "\n\r"] of
         Right (HELO client) -> commandHandleHELO h client    >> commandProcessor config h
+        Right (EHLO client) -> commandHandleEHLO h client    >> commandProcessor config h
         Right (MAIL from)   -> commandHandleMAIL h from      >> commandProcessor config h
         Right (RCPT to)     -> commandHandleRCPT h to config >> commandProcessor config h
         Right (VRFY user)   -> return $ CPVRFY user
         Right DATA          -> commandHandleDATA h config    >> return CPEMAIL
         Right QUIT          -> return CPQUIT
         Right RSET          -> commandHandleRSET h           >> return CPRESET
+        Right (AUTH t msg)  -> commandHandleAUTH h config t msg >> commandProcessor config h
         Right (NOOP _)      -> (liftIO $ respond250 h)       >> commandProcessor config h
         Right (INVALCMD _)  -> (liftIO $ respond500 h)       >> commandProcessor config h
         Right _             -> (liftIO $ respond502 h)       >> commandProcessor config h
-        Left _              -> (liftIO $ respond500 h)       >> return CPAGAIN
+        Left  _             -> (liftIO $ respond500 h)       >> return CPAGAIN
 
 ------------------------------------------------------------------------------
 --                               SMTPClient                                 --
