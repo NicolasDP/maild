@@ -20,6 +20,7 @@ executable maild
   -- other-extensions:    
   build-depends:       base >=4.7 && <4.8
                      , network
+                     , configurator
                      , filepath
                      , maild
   hs-source-dirs:      src

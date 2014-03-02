@@ -6,31 +6,41 @@
 -- Stability   : experimental
 -- Portability : unknown
 --
+{-# Language OverloadedStrings #-}
 import Network
 import Network.SMTP
 import Network.SMTP.Types
 import Network.SMTP.Auth
-import Data.MailStorage
 
-import System.Environment (getArgs)
+import System.Environment (getArgs, getProgName)
 import System.FilePath  (FilePath, (</>))
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar
 
+import Data.MailStorage
+import Data.Configurator
+import Data.Configurator.Types
+
+getSMTPConfigFrom :: Config -> IO SMTPConfig
+getSMTPConfigFrom conf = do
+    p <- require conf "smtp.port"
+    c <- require conf "smtp.connections"
+    dir <- require conf "mailstorage.path"
+    mMailStorage <- getMailStorage dir
+    mailStorage <- case mMailStorage of
+                        Nothing -> initMailStorageDir dir
+                        Just ms -> return ms
+    return $ SMTPConfig p c mailStorage
+
 main = do
     args <- getArgs
+    name <- getProgName
     case args of
-        ["port", p, "connections", c, "dir", dir] -> do
-                       mMailStorage <- getMailStorage dir
-                       mailStorage <- case mMailStorage of
-                                         Nothing -> initMailStorageDir dir
-                                         Just ms -> return ms
-                       startSMTPServer $ SMTPConfig
-                                            (read p)
-                                            (read c)
-                                            mailStorage
-        _           -> putStrLn "usage: [port <port> connections <connections> maildir <dir>] | default"
+        [configFile] -> do conf <- load [Required configFile]
+                           config <- getSMTPConfigFrom conf
+                           startSMTPServer config
+        _           -> putStrLn $ "usage: " ++ name ++ " <configuration file>"
 
 startSMTPServer config = do
     smtpChan <- newSMTPChan 

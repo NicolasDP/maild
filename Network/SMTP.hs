@@ -211,7 +211,6 @@ commandHandleMAIL h from = do
 
 commandHandleRCPT :: Handle -> ForwardPath -> SMTPConfig -> EmailS ()
 commandHandleRCPT h to config = do
-    -- Check the domain is correct:
     let Path _ addr = to :: Path
     isAuth <- gets (\s -> identified s)
     size <- gets (\s -> length $ mailTo s)
