@@ -231,7 +231,7 @@ isLocalPartOf ms d l =
     in  doesDirectoryExist mailBoxPath
 
 isLocalAddress :: MailStorage -> EmailAddress -> IO Bool
-isLocalAddress ms (EmailAddress d l) = isLocalPartOf ms d l
+isLocalAddress ms (EmailAddress l d) = isLocalPartOf ms d l
 
 findMailStorageUsers :: MailStorage -> String -> IO [MailStorageUser]
 findMailStorageUsers ms s = do
