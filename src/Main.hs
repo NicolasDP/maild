@@ -18,28 +18,19 @@ import System.FilePath  (FilePath, (</>))
 import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar
 
-verifySMTPUser :: SMTPConfig -> String -> IO [MailUser]
-verifySMTPUser config name = return $ findMailUsers name $ storageDir config
-
-expandSMTPUser :: SMTPConfig -> String -> IO [MailUser]
-expandSMTPUser config name = undefined
-
 main = do
     args <- getArgs
     case args of
-        ["port", p, "domain", d, "connections", c, "dir", dir] -> do
+        ["port", p, "connections", c, "dir", dir] -> do
                        mMailStorage <- getMailStorage dir
                        mailStorage <- case mMailStorage of
                                          Nothing -> initMailStorageDir dir
                                          Just ms -> return ms
                        startSMTPServer $ SMTPConfig
                                             (read p)
-                                            d
                                             (read c)
                                             mailStorage
-                                            verifySMTPUser
-                                            expandSMTPUser
-        _           -> putStrLn "usage: [port <port> domain <domain> connections <connections> maildir <dir>] | default"
+        _           -> putStrLn "usage: [port <port> connections <connections> maildir <dir>] | default"
 
 startSMTPServer config = do
     smtpChan <- newSMTPChan 

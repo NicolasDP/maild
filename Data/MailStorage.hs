@@ -15,18 +15,24 @@ module Data.MailStorage
     ( -- * helpers
       getIncomingDir
     , getForDeliveryDir
-    , getUserAccountDir
+    , getDomainsDir
     , generateUniqueFilename
       -- * General
     , MailStorage(..)
-    , MailUser(..)
     , isMailStorageDir
     , initMailStorageDir
     , getMailStorage
     , fromIncomingToFordelivery
-    , getMailUserAccounts
-    , findMailUsers
+      -- * Domains
+    , listDomains
+    , isSupportedDomain
+    , isLocalPartOf
+    , isLocalAddress
+    , getMailStorageUser
+    , findMailStorageUsers
     ) where
+
+import Network.SMTP.Types (EmailAddress(..), Domain, LocalPart, MailStorageUser(..))
 
 import qualified Crypto.Hash as Hash
 
@@ -34,12 +40,13 @@ import Control.Monad       (when)
 import Control.Monad.State
 
 import System.FilePath  (FilePath, (</>), takeFileName)
-import System.Directory (getDirectoryContents, doesDirectoryExist, createDirectory, renameFile)
+import System.Directory (getDirectoryContents, doesDirectoryExist, doesFileExist, createDirectory, renameFile)
 import System.Random    (getStdRandom, randomR)
 
 import System.Hourglass (timeCurrent)
 import Data.Hourglass   (Elapsed, timePrint, ISO8601_DateAndTime(..))
-import Data.Char        (isSpace, toLower)
+import Data.Char        (isSpace, toUpper, toLower)
+import Data.Maybe       (catMaybes)
 
 import qualified Data.ByteString.Char8 as BC (unpack, pack, ByteString)
 
@@ -53,41 +60,41 @@ getIncomingDir = "incoming"
 getForDeliveryDir :: FilePath
 getForDeliveryDir = "for-delivery"
 
-getUserAccountDir :: FilePath
-getUserAccountDir = "users"
+getUsersDir :: FilePath
+getUsersDir = "users"
+
+getDomainsDir :: FilePath
+getDomainsDir = "domains"
 
 -- | list the mandatory directory needed in a MailStorageDir
 getMandatorySubDir :: [FilePath]
 getMandatorySubDir =
     [ getIncomingDir
     , getForDeliveryDir
-    , getUserAccountDir
+    , getDomainsDir
+    , getUsersDir
     ]
 
 data MailStorage = MailStorage
     { mainDir        :: FilePath
     , incomingDir    :: FilePath
     , forDeliveryDir :: FilePath
-    , userAccountDir :: FilePath
-    , userAccounts   :: [MailUser]
+    , usersDir       :: FilePath
+    , domainsDir     :: FilePath
     } deriving (Eq)
 
 -- | get mailStorage:
 getMailStorage :: FilePath -> IO (Maybe MailStorage)
 getMailStorage dir = do
     isDir <- isMailStorageDir dir
-    case isDir of
-        False -> return $ Nothing
-        True  -> do
-            users <- getMailUserAccounts (MailStorage [] [] [] accountsDir [])
-            return $ Just $ MailStorage
+    return $ case isDir of
+        False -> Nothing
+        True  -> Just $ MailStorage
                                 dir
                                 (dir </> getIncomingDir)
                                 (dir </> getForDeliveryDir)
-                                accountsDir
-                                users
-        where
-            accountsDir = dir </> getUserAccountDir
+                                (dir </> getUsersDir)
+                                (dir </> getDomainsDir)
 
 -- | init or create a MailStorageDir
 -- if the directory already exists, then it attempt to create the sub-directories
@@ -99,8 +106,8 @@ initMailStorageDir dir = do
     return $ MailStorage dir
                          (dir </> getIncomingDir)
                          (dir </> getForDeliveryDir)
-                         (dir </> getUserAccountDir)
-                         []
+                         (dir </> getUsersDir)
+                         (dir </> getDomainsDir)
     where
         createMailStorageSubDir :: [FilePath] -> IO ()
         createMailStorageSubDir []     = return ()
@@ -157,61 +164,132 @@ fromIncomingToFordelivery config filename = renameFile inCommingPath forDelivery
 --                                  User's mailbox                          --
 ------------------------------------------------------------------------------
 
-data MailUser = MailUser
-    { emailAddr   :: String   -- ^ user's local-part address (local-part@server.foo)
-    , firstName   :: String   -- ^ user first name
-    , lastName    :: String   -- ^ user last name
-    , userDigest  :: String   -- ^ user identification digest
-    , mailBoxPath :: FilePath -- ^ absolute file path to user's MailDir (/home/bar/mails)
-    } deriving (Eq, Show, Read)
+-- It is time to define user properly:
+-- what do we want?
+-- The mailDir:
+-- some/path:
+--   |
+--   |-- incoming <- a temporary area to store the incoming mail (every *DATA*)
+--   |
+--   |-- for-delivery <- incoming mail will be moved to this dir for delivery
+--   |
+--   |-- users <-- users
+--   |     |
+--   |     |-- nicolas <- file which list all the domains/localpart
+--   |     |    |
+--   |     |    ` - firstname, lastname, digest, list of <localpart@domains>
+--   |     |
+--   |     `-- .. <- others users
+--   |
+--   |
+--   `-- domains
+--         |
+--         |-- di-prima.fr
+--         |    |
+--         |    `-- nicolas <-- nicolas@di-prima.fr
+--         |          |
+--         |          `--.config <- user config
+--         |
+--         |-- mail.di-prima.fr
+--         |    |
+--         |    `-- nicolas <-- nicolas@mail.di-prima.fr
+--         |          |
+--         |          `.config
+--         |
+--         `-- di-prima.io
+--              |
+--              `-- git <-- git@di-prima.fr
+--                    |
+--                    `.config
 
-defaultMailUser :: String -> MailUser
-defaultMailUser addr = MailUser addr [] [] [] ""
+defaultMailStorageUser :: MailStorageUser
+defaultMailStorageUser = MailStorageUser [] "" "" ""
 
-type MailUserS a = StateT MailUser IO a
+isSupportedDomain :: MailStorage -> Domain -> IO Bool
+isSupportedDomain ms d =
+    let domains = domainsDir ms
+        domain = domains </> d
+    in  doesDirectoryExist domain
 
-parseUserContent :: [String] -> MailUserS ()
+listDomains :: MailStorage -> IO [Domain]
+listDomains ms =
+    (getDirectoryContents $ domainsDir ms) >>= \xs -> return $ filter (\x -> notElem x [".", ".."]) xs
+
+listMailBoxs :: MailStorage -> Domain -> IO [LocalPart]
+listMailBoxs ms d =
+    (getDirectoryContents $ (domainsDir ms) </> d) >>= \xs -> return $ filter (\x -> notElem x [".", ".."]) xs
+
+listUsers :: MailStorage -> IO [FilePath]
+listUsers ms =
+    (getDirectoryContents $ usersDir ms) >>= \xs -> return $ filter (\x -> notElem x [".", ".."]) xs
+
+isLocalPartOf :: MailStorage -> Domain -> LocalPart -> IO Bool
+isLocalPartOf ms d l =
+    let domains = domainsDir ms
+        domain = domains </> d
+        mailBoxPath = domain </> l
+    in  doesDirectoryExist mailBoxPath
+
+isLocalAddress :: MailStorage -> EmailAddress -> IO Bool
+isLocalAddress ms (EmailAddress d l) = isLocalPartOf ms d l
+
+findMailStorageUsers :: MailStorage -> String -> IO [MailStorageUser]
+findMailStorageUsers ms s = do
+    l <- listUsers ms
+    lmuser <- mapM (getMailStorageUser ms) l
+    return $ filter findMailStorageUser $ catMaybes lmuser
+    where
+        exp :: String
+        exp = map toUpper s
+        findMailStorageUser :: MailStorageUser -> Bool
+        findMailStorageUser msu
+            =  (map toUpper $ firstName msu) == exp
+            || (map toUpper $ lastName msu)  == exp
+            || checkLocalEmails (emails msu)
+
+        checkLocalEmails :: [EmailAddress] -> Bool
+        checkLocalEmails [] = False
+        checkLocalEmails ((EmailAddress l _):xs) =
+            if (map toUpper l) == exp
+                then True
+                else checkLocalEmails xs
+
+-- | get a user configuration
+getMailStorageUser :: MailStorage -> FilePath -> IO (Maybe MailStorageUser)
+getMailStorageUser ms login =
+    let userFile = (usersDir ms) </> login
+    in  do isFile <- doesFileExist userFile
+           if isFile
+                then parseMailUser userFile >>= \u -> return $ Just u
+                else return Nothing
+
+type MailStorageUserS a = StateT MailStorageUser IO a
+
+parseUserContent :: [String] -> MailStorageUserS ()
 parseUserContent []     = return ()
 parseUserContent [line] = parseUserContentLine line
 parseUserContent (l:ls) = parseUserContentLine l >> parseUserContent ls
 
 -- TODO: write a better parser using attoparsec
-parseUserContentLine :: String -> MailUserS ()
+parseUserContentLine :: String -> MailStorageUserS ()
 parseUserContentLine line =
     case span (\c -> c /= '=') $ line of
         ("firstname", '=':r) -> modify $ \s -> s { firstName = read r }
         ("lastname",  '=':r) -> modify $ \s -> s { lastName  = read r }
-        ("path",      '=':r) -> modify $ \s -> s { mailBoxPath = read r }
         ("password",  '=':r) -> modify $ \s -> s { userDigest = read r }
+        ("address",   '=':r) -> parseUserAddress r
         e                    -> error $ "unexpected line: " ++ (show line) ++ " --> " ++ (show e)
+    where
+        parseUserAddress :: String -> MailStorageUserS ()
+        parseUserAddress s =
+            modify $ \s -> s { emails = addr:(emails s) }
+            where
+                (local, pDom) = span (\c -> c /= '@') s
+                dom = drop 1 pDom
+                addr = EmailAddress local dom
 
-parseMailUser :: FilePath -> IO MailUser
+parseMailUser :: FilePath -> IO MailStorageUser
 parseMailUser filepath = do
     contentLines <- readFile filepath >>= \contents -> return $ lines contents
-    (_, userMail) <- runStateT (parseUserContent contentLines) $ defaultMailUser addr
+    (_, userMail) <- runStateT (parseUserContent contentLines) defaultMailStorageUser
     return userMail
-    where
-        addr :: FilePath
-        addr = takeFileName filepath
-
-getMailUserAccounts :: MailStorage -> IO [MailUser]
-getMailUserAccounts (MailStorage _ _ _ dir _) = do
-    users <- getDirectoryContents dir >>= \l -> return $ filter (\e -> e /= "." && e /= "..") l
-    mapM (\u -> parseMailUser $ dir </> u) users
-
--- | find the list of user that may correspond to the given string:
--- white-space sensitive
--- not case-sensitive
-findMailUsers :: String -> MailStorage -> [MailUser]
-findMailUsers s (MailStorage _ _ _ _ list) =
-    filter filterHelper list
-    where
-        filterHelper :: MailUser -> Bool
-        filterHelper user = (map toLower s) `elem` (listToCheck user)
-
-        listToCheck user =
-            [ map toLower $ emailAddr user
-            , map toLower $ firstName user
-            , map toLower $ lastName user
-            ]
-

@@ -11,8 +11,11 @@ module Network.SMTP.Types
     ( -- * Commands
       Command(..)
     , Email(..)
+    , MailStorageUser(..)
     , Path(..)
     , EmailAddress(..)
+    , Domain
+    , LocalPart
     , showPath
     , ForwardPath(..)
     , ReversePath(..)
@@ -36,12 +39,19 @@ import Control.Applicative ((<|>))
 
 import Network.SMTP.Auth
 
+data MailStorageUser = MailStorageUser
+    { emails      :: [EmailAddress]
+    , firstName   :: String
+    , lastName    :: String
+    , userDigest  :: String
+    } deriving (Show, Eq)
+
 data Email = Email
     { mailClient   :: String
     , mailFrom     :: ReversePath
     , mailTo       :: [ForwardPath]
     , mailData     :: FilePath
-    , identified   :: Bool
+    , identified   :: Maybe MailStorageUser
     } deriving (Show, Eq)
 
 -- | In the case of an address email: local-part@domain
@@ -113,10 +123,9 @@ parseParameterMaybeString =
 parseParameterB64String :: Parser String
 parseParameterB64String = do
     char ' '
-    param <- AC.many' $ satisfy $ \c -> isAlphaNum c
-    char '='
+    param <- AC.many' $ satisfy $ \c -> isAlphaNum c || c == '='
     skipEndOfLine
-    return $ param ++ "="
+    return param
 
 parseParameterB64MaybeString :: Parser (Maybe String)
 parseParameterB64MaybeString =
@@ -126,7 +135,7 @@ parseParameterB64MaybeString =
            return $ Just s
 
 skipEndOfLine :: Parser ()
-skipEndOfLine = char '\r' >> return ()
+skipEndOfLine = char '\r' >> char '\n' >> return ()
 
 parseDomain :: Parser Domain
 parseDomain = AC.many' $ satisfy $ \c -> isAlphaNum c || c == '.' || c == '-'

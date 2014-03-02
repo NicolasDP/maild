@@ -37,6 +37,7 @@ import Control.Monad.State
 import qualified Data.ByteString.Char8     as BC
 
 import System.IO
+import System.Timeout
 import System.FilePath  (FilePath, (</>))
 
 import Data.MailStorage
@@ -44,11 +45,8 @@ import Data.List (find)
 
 data SMTPConfig = SMTPConfig
     { smtpPort       :: Int
-    , smtpDomainName :: String
     , smtpMaxClients :: Int
     , storageDir     :: MailStorage
-    , userVerify     :: SMTPConfig -> String -> IO [MailUser]
-    , userExpand     :: SMTPConfig -> String -> IO [MailUser]
     }
 
 ------------------------------------------------------------------------------
@@ -77,13 +75,13 @@ getNextEmail = atomically . readTChan
 emptyReversePath :: ReversePath
 emptyReversePath = Path [] (EmailAddress [] [])
 
-defaultEmail :: Bool -> Email
-defaultEmail isLogon = Email
+defaultEmail :: Maybe MailStorageUser -> Email
+defaultEmail user = Email
                 { mailClient = []
                 , mailFrom   = emptyReversePath
                 , mailTo     = []
                 , mailData   = []
-                , identified = isLogon
+                , identified = user
                 }
 
 -- | Accept a client, and communicate with him to get emails.
@@ -91,30 +89,35 @@ defaultEmail isLogon = Email
 -- -2- read/answer any commands
 acceptClient :: SMTPConfig -> Handle -> SMTPChan -> IO ()
 acceptClient config h chan = do
-    respond220 h (smtpDomainName config)
-    clientLoop $ defaultEmail False
+    listDoms <- listDomains $ storageDir config :: IO [String]
+    respond' h 220 $ ("service ready"):listDoms
+    clientLoop $ defaultEmail Nothing
     where
         clientLoop :: Email -> IO ()
         clientLoop email = do
             (err, email) <- runStateT (commandProcessor config h) email
             case err of
-                CPQUIT   -> closeHandle config h
+                CPQUIT   -> closeHandle h
                 CPRESET  -> clientLoop $ defaultEmail (identified email)
                 -- RFC5321 (section DATA: 4.1.1.4): process the storage of an email after DATA command:
                 -- and clear the buffers (so restart a loop without any information)
                 -- TODO: respond should be send only if the email storage has been processed properly
                 CPEMAIL  -> publishEmail chan email >> clientLoop (defaultEmail $ identified email)
                 CPAGAIN  -> clientLoop email
-                CPVRFY u -> do mails <- (userVerify config) config u
+                CPVRFY u -> do mails <- findMailStorageUsers (storageDir config) u
                                case mails of
                                     [] -> respond252 h
-                                    l  -> respond' h 250 $ userMailToVRFY l $ smtpDomainName config
+                                    l  -> respond' h 250 $ userMailToVRFY l
                                clientLoop email
 
-        userMailToVRFY :: [MailUser] -> String -> [String]
-        userMailToVRFY []        _      = []
-        userMailToVRFY (user:xs) domain = userString:(userMailToVRFY xs domain)
-            where userString = (firstName user) ++ " " ++ (lastName user) ++ " <" ++ (emailAddr user) ++ "@" ++ domain ++ ">"
+        userMailToVRFY :: [MailStorageUser] -> [String]
+        userMailToVRFY []        = []
+        userMailToVRFY (user:xs) = (userMailsString (firstName user) (lastName user) (emails user)) ++ (userMailToVRFY xs)
+
+        userMailsString :: String -> String -> [EmailAddress] -> [String]
+        userMailsString _ _ [] = []
+        userMailsString fname lname (addr:xs) =
+            (fname ++ " " ++ lname ++ "<" ++ (show addr) ++ ">"):(userMailsString fname lname xs)
 
 -- | Reject a client:
 -- as described in RFC5321:
@@ -129,7 +132,7 @@ rejectClient config h = do
         loopRejectClient h = do
             buff <- liftIO $ BC.hGetLine h
             case parseCommandByteString $ BC.concat [buff, BC.pack "\n\r"] of
-                Right QUIT -> closeHandle config h
+                Right QUIT -> closeHandle h
                 _          -> respond503 h >> loopRejectClient h
 
 ------------------------------------------------------------------------------
@@ -155,7 +158,7 @@ respond211 h status = respond h 211 $ "System status: " ++ status
 respond214 h help   = respond h 214 $ "Help: " ++ help
 
 respond220 h domain = respond h 220 $ domain ++ " Service ready"
-respond221 h domain = respond h 221 $ domain ++ " Service closing transmission channel" 
+respond221 h        = respond h 221 $ "Service closing transmission channel"
 respond421 h domain = respond h 421 $ domain ++ " Service not available, closing transmission channel"
 
 respond250 h        = respond h 250 "Action completed"
@@ -169,15 +172,14 @@ respond550 h        = respond h 550 "Requested action not taken: mailbox unavail
 respond451 h        = respond h 451 "Requested action aborted: error in processing"
 respond551 h fwd    = respond h 551 $ "User not local: please try <" ++ fwd ++ ">"
 respond452 h        = respond h 452 "Requested action not taken: insufficient system storage"
-respond552 h        = respond h 552 "Requested mail action not aborted: exceeded storage allocation"
+respond552 h        = respond h 552 "Requested mail action aborted: exceeded storage allocation"
 respond553 h        = respond h 553 "Requested action not taken: mailbox name not allowed"
 
 respond334 h        = respond h 334 "Start auth input"
 respond354 h        = respond h 354 "Start mail input; end with <CRLF>.<CRLF>"
 respond554 h        = respond h 554 "Transaction failed or no SMTP Service here"
 
-closeHandle config h = respond221 h (smtpDomainName config) >> hClose h
-
+closeHandle h = respond221 h >> hClose h
 
 type EmailS a = StateT Email IO a
 
@@ -202,43 +204,43 @@ commandHandleEHLO h client = do
             , "AUTH PLAIN LOGIN CRAM-MD5"
             ]
 
+commandHandleMAIL :: Handle -> ReversePath -> EmailS ()
 commandHandleMAIL h from = do
     modify (\s -> s { mailFrom = from })
     liftIO $ respond250 h
 
+commandHandleRCPT :: Handle -> ForwardPath -> SMTPConfig -> EmailS ()
 commandHandleRCPT h to config = do
     -- Check the domain is correct:
-    let Path _ (EmailAddress local domain) = to
+    let Path _ addr = to :: Path
     isAuth <- gets (\s -> identified s)
-    if isAllowedRCPT local domain isAuth
-        then do modify (\s -> s { mailTo = (to:mailTo s) })
-                liftIO $ respond250 h
-        else liftIO $ respond551 h domain
+    size <- gets (\s -> length $ mailTo s)
+    isAllowed <- liftIO $ isAllowedRCPT addr isAuth
+    if isAllowed
+        then do if size < 101
+                    then do modify (\s -> s { mailTo = (to:mailTo s) })
+                            liftIO $ respond250 h
+                    else liftIO $ respond h 452 "too many recipients"
+        else let (EmailAddress _ dom) = addr
+             in  liftIO $ respond551 h $ dom
     where
-        isAllowedRCPT :: String -> String -> Bool -> Bool
-        isAllowedRCPT _     _      True  = True
-        isAllowedRCPT local domain False
-            | not (domain == (smtpDomainName config)) = False
-            | otherwise =
-                    case find (findUser local) (userAccounts $ storageDir config) of
-                        Nothing -> False
-                        Just _  -> True
+        isAllowedRCPT :: EmailAddress -> Maybe a -> IO Bool
+        isAllowedRCPT _    (Just _) = return True
+        isAllowedRCPT addr Nothing  = isLocalAddress (storageDir config) addr
 
 authentifyPlain :: Handle -> SMTPConfig -> BC.ByteString -> EmailS ()
 authentifyPlain h config buff =
     case serverAuthPlain buff of
         Left err         -> liftIO $ respond h 501 "5.5.2: cannot decode. Is it base64?"
-        Right (user, pw) ->
-            case find (findUser $ BC.unpack user) (userAccounts $ storageDir config) of
+        Right (user, pw) -> do
+            muser <- liftIO $ getMailStorageUser (storageDir config) $ BC.unpack user
+            case muser of
                 Nothing -> liftIO $ respond h 500 "cannot authenticate"
                 Just u  ->
                     if userDigest u == BC.unpack pw
-                        then do modify (\s -> s { identified = True })
+                        then do modify (\s -> s { identified = Just u })
                                 liftIO $ respond h 235 "2.7.0 Authentication granted"
                         else liftIO $ respond h 535 "Authentication failed"
-
-findUser :: String -> MailUser -> Bool
-findUser login u = login == (emailAddr u)
 
 commandHandleAUTH :: Handle -> SMTPConfig -> AuthType -> Maybe String -> EmailS ()
 commandHandleAUTH h config PLAIN mTxt =
@@ -281,21 +283,24 @@ data CommandProcessorERROR
 
 commandProcessor :: SMTPConfig -> Handle -> EmailS (CommandProcessorERROR)
 commandProcessor config h = do
-    buff <- liftIO $ BC.hGetLine h
-    case parseCommandByteString $ BC.concat [buff, BC.pack "\n\r"] of
-        Right (HELO client) -> commandHandleHELO h client    >> commandProcessor config h
-        Right (EHLO client) -> commandHandleEHLO h client    >> commandProcessor config h
-        Right (MAIL from)   -> commandHandleMAIL h from      >> commandProcessor config h
-        Right (RCPT to)     -> commandHandleRCPT h to config >> commandProcessor config h
-        Right (VRFY user)   -> return $ CPVRFY user
-        Right DATA          -> commandHandleDATA h config    >> return CPEMAIL
-        Right QUIT          -> return CPQUIT
-        Right RSET          -> commandHandleRSET h           >> return CPRESET
-        Right (AUTH t msg)  -> commandHandleAUTH h config t msg >> commandProcessor config h
-        Right (NOOP _)      -> (liftIO $ respond250 h)       >> commandProcessor config h
-        Right (INVALCMD _)  -> (liftIO $ respond500 h)       >> commandProcessor config h
-        Right _             -> (liftIO $ respond502 h)       >> commandProcessor config h
-        Left  _             -> (liftIO $ respond500 h)       >> return CPAGAIN
+    mbuff <- liftIO $ timeout (5 * 60 * 1000000) $ BC.hGetSome h 2048
+    case mbuff of
+        Nothing -> return CPQUIT
+        Just buff ->
+		    case parseCommandByteString $ BC.concat [buff, BC.pack "\n\r"] of
+		        Right (HELO client) -> commandHandleHELO h client    >> commandProcessor config h
+		        Right (EHLO client) -> commandHandleEHLO h client    >> commandProcessor config h
+		        Right (MAIL from)   -> commandHandleMAIL h from      >> commandProcessor config h
+		        Right (RCPT to)     -> commandHandleRCPT h to config >> commandProcessor config h
+		        Right (VRFY user)   -> return $ CPVRFY user
+		        Right DATA          -> commandHandleDATA h config    >> return CPEMAIL
+		        Right QUIT          -> return CPQUIT
+		        Right RSET          -> commandHandleRSET h           >> return CPRESET
+		        Right (AUTH t msg)  -> commandHandleAUTH h config t msg >> commandProcessor config h
+		        Right (NOOP _)      -> (liftIO $ respond250 h)       >> commandProcessor config h
+		        Right (INVALCMD _)  -> (liftIO $ respond500 h)       >> commandProcessor config h
+		        Right _             -> (liftIO $ respond502 h)       >> commandProcessor config h
+		        Left  _             -> (liftIO $ respond500 h)       >> return CPAGAIN
 
 ------------------------------------------------------------------------------
 --                               SMTPClient                                 --
