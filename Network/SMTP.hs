@@ -201,7 +201,7 @@ commandHandleEHLO h client = do
             h
             250
             [ "Service ready"
-            , "AUTH PLAIN LOGIN CRAM-MD5"
+            , "AUTH PLAIN" -- "LOGIN CRAM-MD5"
             ]
 
 commandHandleMAIL :: Handle -> ReversePath -> EmailS ()
