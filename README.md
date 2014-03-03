@@ -23,6 +23,7 @@ Add in the configuration file the following options in the option group
 when this limit is reached).
 
 Example:
+
     smtp {
         port = 25
         connections = 128
@@ -96,6 +97,7 @@ the required security) (unique)
 * address: a quoted string which represents an address (local-part@domains) (0, 1 or more)
 
 For example, the user "oneill" may have a file:
+
     firstname="Jack"
     lastname="o'neill"
     password="Skaara1994"
