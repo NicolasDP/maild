@@ -11,12 +11,15 @@
 -- -2- when the mail has been fully received by the server, the server move it
 --     to "fordelivery". At this point, the file is not yet in the recipient
 --     mailbox. The email is waiting to be managed/filter/delivered.
+--
+{-# Language OverloadedStrings #-}
 module Data.MailStorage
     ( -- * helpers
       getIncomingDir
     , getForDeliveryDir
     , getDomainsDir
     , generateUniqueFilename
+    , createIncomingDataFile
       -- * General
     , MailStorage(..)
     , isMailStorageDir
@@ -32,23 +35,24 @@ module Data.MailStorage
     , findMailStorageUsers
     ) where
 
-import Network.SMTP.Types (EmailAddress(..), Domain, LocalPart, MailStorageUser(..))
+import Network.SMTP.Types
 
 import qualified Crypto.Hash as Hash
 
 import Control.Monad       (when)
-import Control.Monad.State
 
 import System.FilePath  (FilePath, (</>), takeFileName)
 import System.Directory (getDirectoryContents, doesDirectoryExist, doesFileExist, createDirectory, renameFile)
 import System.Random    (getStdRandom, randomR)
 
 import System.Hourglass (timeCurrent)
-import Data.Hourglass   (Elapsed, timePrint, ISO8601_DateAndTime(..))
+import Data.Hourglass
 import Data.Char        (isSpace, toUpper, toLower)
 import Data.Maybe       (catMaybes)
+import Data.Configurator
+import Data.Configurator.Types
 
-import qualified Data.ByteString.Char8 as BC (unpack, pack, ByteString)
+import qualified Data.ByteString.Char8 as BC (unpack, pack, ByteString, writeFile)
 
 ------------------------------------------------------------------------------
 --                              Mail Storages                               --
@@ -150,15 +154,63 @@ generateUniqueFilename client from = do
         randomThing :: String -> String -> BC.ByteString
         randomThing t r = BC.pack $ t ++ client ++ from ++ r
 
+createIncomingDataFile :: MailStorage
+                       -> Domain
+                       -> Email
+                       -> IO ()
+createIncomingDataFile ms domain email = do
+    time <- timeCurrent >>= \t -> return $ timePrint myTimeFormat t
+    let receivedString = "Received: (Haskell SMTP daemon)"
+                        ++ cwfs ++ fromDomainString ++ withString
+                        ++ cwfs ++ byDomainString
+                        ++ cwfs ++ "; " ++ time
+                        ++ "\r\n"
+    BC.writeFile inComingPath $ BC.pack receivedString
+    where
+        inComingPath = (incomingDir ms) </> (mailData email)
+        wsp :: Char
+        wsp = ' '
+        cwfs :: String
+        cwfs = "\r\n  "
+
+        fromDomainString = "FROM " ++ (mailClient email)
+        withString = maybe [] (\t -> " WITH " ++ (show t)) (smtpType email)
+        byDomainString   = "BY "   ++ domain
+
+        myTimeFormat :: TimeFormatString
+        myTimeFormat =
+            TimeFormatString
+                [ Format_Day2
+                , Format_Text wsp
+                , Format_MonthName_Short
+                , Format_Text wsp
+                , Format_Year4
+                , Format_Text wsp
+                , Format_Hour
+                , Format_Text ':'
+                , Format_Minute
+                , Format_Text ':'
+                , Format_Second
+                , Format_Text wsp
+                , Format_TzHM
+                , Format_Text wsp
+                , Format_Text '('
+                , Format_TimezoneName
+                , Format_Text ')'
+                ]
+
 -- | move a file from the "bufferisation" area to the
 -- "wait for filtering/delivering" area
+--
+-- This action also add the "time-stamp-line" as specified in RFC5321 section
+-- 4.1.1.4 (and discribed in section 4.4)
 fromIncomingToFordelivery :: MailStorage    -- ^ MailStorageDirectory
-                          -> FilePath    -- ^ filename
+                          -> Email          -- ^ the email to move for delivery
                           -> IO ()
-fromIncomingToFordelivery config filename = renameFile inCommingPath forDeliveryPath
+fromIncomingToFordelivery ms email = renameFile inComingPath forDeliveryPath
     where
-        inCommingPath   = (incomingDir    config) </> filename
-        forDeliveryPath = (forDeliveryDir config) </> filename
+        inComingPath    = (incomingDir    ms) </> (mailData email)
+        forDeliveryPath = (forDeliveryDir ms) </> (mailData email)
     
 ------------------------------------------------------------------------------
 --                                  User's mailbox                          --
@@ -260,36 +312,26 @@ getMailStorageUser ms login =
     let userFile = (usersDir ms) </> login
     in  do isFile <- doesFileExist userFile
            if isFile
-                then parseMailUser userFile >>= \u -> return $ Just u
+                then parseMailStorageUserFile userFile >>= \u -> return $ Just u
                 else return Nothing
 
-type MailStorageUserS a = StateT MailStorageUser IO a
-
-parseUserContent :: [String] -> MailStorageUserS ()
-parseUserContent []     = return ()
-parseUserContent [line] = parseUserContentLine line
-parseUserContent (l:ls) = parseUserContentLine l >> parseUserContent ls
-
--- TODO: write a better parser using attoparsec
-parseUserContentLine :: String -> MailStorageUserS ()
-parseUserContentLine line =
-    case span (\c -> c /= '=') $ line of
-        ("firstname", '=':r) -> modify $ \s -> s { firstName = read r }
-        ("lastname",  '=':r) -> modify $ \s -> s { lastName  = read r }
-        ("password",  '=':r) -> modify $ \s -> s { userDigest = read r }
-        ("address",   '=':r) -> parseUserAddress r
-        e                    -> error $ "unexpected line: " ++ (show line) ++ " --> " ++ (show e)
+parseMailStorageUserFile :: FilePath -> IO MailStorageUser
+parseMailStorageUserFile filepath = do
+    conf <- load [Required filepath]
+    firstname <- require conf "firstname"
+    lastname <- require conf "lastname"
+    password <- require conf "password"
+    address <- require conf "address" >>= \(List lvalues) -> return $ map parseUserAddress $ catMaybes $ map convert lvalues
+    return $ MailStorageUser
+                { emails = address
+                , firstName = firstname
+                , lastName = lastname
+                , userDigest = password
+                }
     where
-        parseUserAddress :: String -> MailStorageUserS ()
-        parseUserAddress s =
-            modify $ \s -> s { emails = addr:(emails s) }
+        parseUserAddress :: String -> EmailAddress
+        parseUserAddress s = addr
             where
                 (local, pDom) = span (\c -> c /= '@') s
                 dom = drop 1 pDom
                 addr = EmailAddress local dom
-
-parseMailUser :: FilePath -> IO MailStorageUser
-parseMailUser filepath = do
-    contentLines <- readFile filepath >>= \contents -> return $ lines contents
-    (_, userMail) <- runStateT (parseUserContent contentLines) defaultMailStorageUser
-    return userMail

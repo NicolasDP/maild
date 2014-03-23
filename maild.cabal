@@ -38,6 +38,7 @@ Library
                      , mtl
                      , hourglass
                      , cryptohash
+                     , configurator
                      , base64-bytestring
                      , directory
                      , filepath

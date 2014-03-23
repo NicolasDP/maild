@@ -21,12 +21,14 @@ Add in the configuration file the following options in the option group
 * port: the port number to listen on
 * connections: the number of accepted connections (will reject all connections
 when this limit is reached).
+* domain: the MX domain which point to the machine which hosts the daemon
 
 Example:
 
     smtp {
         port = 25
         connections = 128
+        domain = "smtp.my.private.domain.net"
     }
 
 ## MailStorage
@@ -94,15 +96,20 @@ A *User configuration file* contains the following values:
 * lastname: a quoted string  (unique)
 * password: quoted string (can be a clear password or a digest, depends on
 the required security) (unique)
-* address: a quoted string which represents an address (local-part@domains) (0, 1 or more)
+* address: a list of email address (quoted string)
+
+User configuration file uses *configurator* (the same tools used for maild's
+configuration file). So you need to follow the same syntax as described in the
+*configurator* documentation.
 
 For example, the user "oneill" may have a file:
 
-    firstname="Jack"
-    lastname="o'neill"
-    password="Skaara1994"
-    address="jack@sg1.io"
-    address="jack@oneill.io"
+    firstname = "Jack"
+    lastname  = "o'neill"
+    password  = "Skaara1994"
+    address   = [ "jack@sg1.io"
+                , "jack@oneill.io"
+                ]
 
 The user "oneill" has 2 mailbox "jack": One in the domain "sg1.io", one in "oneill.io"
 

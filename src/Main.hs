@@ -24,6 +24,7 @@ import Data.Configurator.Types
 
 getSMTPConfigFrom :: Config -> IO SMTPConfig
 getSMTPConfigFrom conf = do
+    d <- require conf "smtp.domain"
     p <- require conf "smtp.port"
     c <- require conf "smtp.connections"
     dir <- require conf "mailstorage.path"
@@ -31,7 +32,7 @@ getSMTPConfigFrom conf = do
     mailStorage <- case mMailStorage of
                         Nothing -> initMailStorageDir dir
                         Just ms -> return ms
-    return $ SMTPConfig p c mailStorage
+    return $ SMTPConfig p d c mailStorage
 
 main = do
     args <- getArgs
@@ -44,19 +45,19 @@ main = do
 
 startSMTPServer config = do
     smtpChan <- newSMTPChan 
-    forkIO $ recvLoop (storageDir config) smtpChan
+    forkIO $ recvLoop config smtpChan
     runServerOnPort config smtpChan
 
-recvLoop storageConfig smtpChan = do
+recvLoop config smtpChan = do
     email <- getNextEmail smtpChan
     -- We received a new email. So, move it from *incoming* directory to
     -- *fordelivery* directory
-    fromIncomingToFordelivery storageConfig $ mailData email
+    fromIncomingToFordelivery (storageDir config) email
     -- now we need to notify the mail manager to require him to deliver the
     -- message to the corresponding mail box or! to forward it to an other
     -- postfix server
     -- TODO: deliverEmail mailManagerChan
-    recvLoop storageConfig smtpChan
+    recvLoop config smtpChan
 
 ------------------------------------------------------------------------------
 --                          SMTP-Server: MainLoop                           --

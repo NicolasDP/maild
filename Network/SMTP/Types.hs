@@ -11,6 +11,7 @@ module Network.SMTP.Types
     ( -- * Commands
       Command(..)
     , Email(..)
+    , SMTPType(..)
     , MailStorageUser(..)
     , Path(..)
     , EmailAddress(..)
@@ -46,11 +47,15 @@ data MailStorageUser = MailStorageUser
     , userDigest  :: String
     } deriving (Show, Eq)
 
+data SMTPType = SMTP | ESMTP
+    deriving (Show, Read, Eq)
+
 data Email = Email
     { mailClient   :: String
-    , mailFrom     :: ReversePath
+    , mailFrom     :: Maybe ReversePath
     , mailTo       :: [ForwardPath]
     , mailData     :: FilePath
+    , smtpType     :: Maybe SMTPType
     , identified   :: Maybe MailStorageUser
     } deriving (Show, Eq)
 
