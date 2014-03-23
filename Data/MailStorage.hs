@@ -26,6 +26,7 @@ module Data.MailStorage
     , initMailStorageDir
     , getMailStorage
     , fromIncomingToFordelivery
+    , deleteDataFromDeliveryDir
       -- * Domains
     , listDomains
     , isSupportedDomain
@@ -42,7 +43,7 @@ import qualified Crypto.Hash as Hash
 import Control.Monad       (when)
 
 import System.FilePath  (FilePath, (</>), takeFileName)
-import System.Directory (getDirectoryContents, doesDirectoryExist, doesFileExist, createDirectory, renameFile)
+import System.Directory
 import System.Random    (getStdRandom, randomR)
 
 import System.Hourglass (timeCurrent)
@@ -160,10 +161,8 @@ createIncomingDataFile :: MailStorage
                        -> IO ()
 createIncomingDataFile ms domain email = do
     time <- timeCurrent >>= \t -> return $ timePrint myTimeFormat t
-    let receivedString = "Received: (Haskell SMTP daemon)"
-                        ++ cwfs ++ fromDomainString ++ withString
-                        ++ cwfs ++ byDomainString
-                        ++ cwfs ++ "; " ++ time
+    let receivedString = "Received: " ++ fromDomainString ++ withString
+                        ++ cwfs ++ byDomainString ++ " ; " ++ time
                         ++ "\r\n"
     BC.writeFile inComingPath $ BC.pack receivedString
     where
@@ -211,7 +210,14 @@ fromIncomingToFordelivery ms email = renameFile inComingPath forDeliveryPath
     where
         inComingPath    = (incomingDir    ms) </> (mailData email)
         forDeliveryPath = (forDeliveryDir ms) </> (mailData email)
-    
+
+deleteDataFromDeliveryDir :: MailStorage
+                          -> Email
+                          -> IO ()
+deleteDataFromDeliveryDir ms email = removeFile filepath
+    where
+        filepath = (forDeliveryDir ms) </> (mailData email)
+
 ------------------------------------------------------------------------------
 --                                  User's mailbox                          --
 ------------------------------------------------------------------------------
