@@ -370,31 +370,58 @@ smtpCloseConnection (SMTPConnection h) =
 
 -- | After opening a socket, here is the way to know if the server is
 -- providing an SMTP service (you still need to parse the return value)
-smtpInitConnection :: Handle
-                   -> IO (Either Response SMTPConnection)
-smtpInitConnection h = do
+smtpInitConnection :: Handle -- ^ the distant connection handler (freshly opened)
+                   -> Domain -- ^ the service domain name (us)
+                   -> IO (Either String SMTPConnection)
+smtpInitConnection h domain = do
     -- when client connects to server, server immediately returns a code.
-    -- ok (220) or ko (554)
     respl <- smtpReadResponses $ SMTPConnection h
-    return $ checkResponseList (head respl) [RC220ServiceReady]
+    if not $ checkResponses RC220ServiceReady respl
+        then return $ Left "service not ready"
+        else do res <- smtpTryCommand (EHLO domain) con RC250Ok
+                if res
+                    then return $ Right con
+                    else return $ Left "Service error EHLO"
     where
-        checkResponseList :: Either String Response
-                          -> [ResponseCode] -- ^ expected one
-                          -> Either Response SMTPConnection
-        checkResponseList r expected =
-            case r of
-                Left err   -> error err
-                Right resp ->
-                    case find (checkResponseCode $ code resp) expected of
-                        Nothing -> Left resp
-                        Just r' -> Right $ SMTPConnection h
+        con = SMTPConnection h
 
-        checkResponseCode :: Either Int ResponseCode
-                          -> ResponseCode
-                          -> Bool
-        checkResponseCode (Left  _) _ = False
-        checkResponseCode (Right c) e = c == e
+smtpSendEmail :: ReversePath   -- the sender
+              -> [ForwardPath] -- recipients
+              -> BC.ByteString    -- mail content
+              -> SMTPConnection
+              -> IO Bool
+smtpSendEmail from to content con = do
+    smtpTryCommand (MAIL from) con RC250Ok
+    mapM (\t -> smtpTryCommand (RCPT t  ) con RC250Ok) to
+    smtpTryCommand (DATA     ) con RC354StartMailInput
+    sendTheData con
+    where
+        sendTheData :: SMTPConnection -> IO Bool
+        sendTheData (SMTPConnection h) = do
+            BC.hPut h $ BC.concat [content, BC.pack "\r\n.\r\n"]
+            l <- smtpReadResponses $ SMTPConnection h
+            return $ case l of
+                [Right (Response (Right RC250Ok) _ _)] -> True
+                _                                      -> False
 
+smtpTryCommand :: Command
+               -> SMTPConnection
+               -> ResponseCode
+               -> IO Bool
+smtpTryCommand cmd con expected = do
+    respList <- smtpSendCommand cmd con
+    return $ checkResponses expected respList
+
+checkResponses :: ResponseCode -> [Either String Response] -> Bool
+checkResponses _ [] = False -- no responses
+checkResponses c [resp]    = checkResponse c resp -- the only or last response
+checkResponses c (resp:rs) = if checkResponse c resp then checkResponses c rs else False
+
+checkResponse :: ResponseCode -> Either String Response -> Bool
+checkResponse _        (Left _)  = False
+checkResponse expected (Right r) = case (code r) of
+                                    Left  _ -> False
+                                    Right c -> c == expected
 
 smtpSendCommand :: Command
                 -> SMTPConnection
