@@ -29,6 +29,7 @@ module Network.SMTP
 
 import Network.SMTP.Types
 import Network.SMTP.Auth
+import Network.SMTP.Parser
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.STM
@@ -38,9 +39,15 @@ import qualified Data.ByteString.Char8     as BC
 
 import System.IO
 import System.Timeout
+import System.Hourglass
 import System.FilePath  (FilePath, (</>))
+import System.Log.Logger
+import System.Log.Handler (setFormatter)
+import System.Log.Handler.Simple
+import System.Log.Formatter
 
 import Data.MailStorage
+import Data.Maild.Email
 import Data.List (find)
 
 data SMTPConfig = SMTPConfig
@@ -48,7 +55,7 @@ data SMTPConfig = SMTPConfig
     , smtpMxDomain   :: Domain
     , smtpMaxClients :: Int
     , storageDir     :: MailStorage
-    }
+    } deriving (Show)
 
 ------------------------------------------------------------------------------
 --                               SMTPChan                                   --
@@ -73,15 +80,47 @@ getNextEmail = atomically . readTChan
 --                               Handling Clients                           --
 ------------------------------------------------------------------------------
 
-defaultEmail :: Email
-defaultEmail = Email
-                { mailClient = []
-                , mailFrom   = Nothing
+emptyEmail :: Email
+emptyEmail = Email
+                { mailFrom   = Nothing
                 , mailTo     = []
                 , mailData   = []
-                , smtpType   = Nothing
-                , identified = Nothing
                 }
+
+addMailFrom :: Email -> ReversePath -> Email
+addMailFrom email from
+    = Email
+        { mailFrom = Just from
+        , mailTo   = mailTo email
+        , mailData = mailData email
+        }
+
+addMailTo :: Email -> ForwardPath -> Email
+addMailTo email to
+    = Email
+        { mailFrom = mailFrom email
+        , mailTo   = to:(mailTo email)
+        , mailData = mailData email
+        }
+
+addMailData :: Email -> FilePath -> Email
+addMailData email datapath
+    = Email
+        { mailFrom = mailFrom email
+        , mailTo   = mailTo email
+        , mailData = datapath
+        }
+
+newClientConnectionState :: IO ClientConnectionState
+newClientConnectionState = do
+    t <- timeCurrent
+    return $ ClientConnectionState
+        { timestamp    = t
+        , domainClient = Nothing
+        , smtpType     = Nothing
+        , identified   = Nothing
+        , smtpMail     = emptyEmail
+        }
 
 -- | Accept a client, and communicate with him to get emails.
 -- -1- send code 221 ;
@@ -90,23 +129,22 @@ acceptClient :: SMTPConfig -> Handle -> SMTPChan -> IO ()
 acceptClient config h chan = do
     listDoms <- listDomains $ storageDir config :: IO [String]
     respond' h 220 $ ("service ready"):listDoms
-    clientLoop defaultEmail
+    newClientConnectionState >>= clientLoop
     where
-        clientLoop :: Email -> IO ()
-        clientLoop email = do
-            (err, email) <- runStateT (commandProcessor config h) email
+        clientLoop :: ClientConnectionState -> IO ()
+        clientLoop ccs = do
+            (err, ccs') <- runStateT (commandProcessor config h) ccs
             case err of
                 CPQUIT   -> closeHandle h
-                -- RFC5321 (section DATA: 4.1.1.4): process the storage of an email after DATA command:
-                -- and clear the buffers (so restart a loop without any information)
-                -- TODO: respond should be send only if the email storage has been processed properly
-                CPEMAIL  -> publishEmail chan email >> runStateT doClearBuffer email >>= \(_, m') -> clientLoop m'
-                CPAGAIN  -> clientLoop email
+                CPEMAIL  -> publishEmail chan (smtpMail ccs')
+                              >> runStateT doClearBuffer ccs'
+                              >>= \(_, ccs'') -> clientLoop ccs''
+                CPAGAIN  -> clientLoop ccs'
                 CPVRFY u -> do mails <- findMailStorageUsers (storageDir config) u
                                case mails of
                                     [] -> respond252 h
                                     l  -> respond' h 250 $ userMailToVRFY l
-                               clientLoop email
+                               clientLoop ccs'
 
         userMailToVRFY :: [MailStorageUser] -> [String]
         userMailToVRFY []        = []
@@ -179,12 +217,12 @@ respond554 h        = respond h 554 "Transaction failed or no SMTP Service here"
 
 closeHandle h = respond221 h >> hClose h
 
-type EmailS a = StateT Email IO a
+type CCStateS a = StateT ClientConnectionState IO a
 
 commandHandleHELO' h client = do
-    pClient <- gets (\s -> mailClient s)
-    when (not $ null pClient) doClearBuffer
-    modify $ \s -> s { mailClient = client }
+    mdc <- gets (\s -> domainClient s)
+    maybe (return ()) (\_ -> doClearBuffer) mdc
+    modify $ \s -> s { domainClient = Just client }
 
 commandHandleHELO h client = do
     commandHandleHELO' h client
@@ -202,20 +240,20 @@ commandHandleEHLO h client = do
             , "AUTH PLAIN" -- "LOGIN CRAM-MD5"
             ]
 
-commandHandleMAIL :: Handle -> ReversePath -> EmailS ()
+commandHandleMAIL :: Handle -> ReversePath -> CCStateS ()
 commandHandleMAIL h from = do
-    modify (\s -> s { mailFrom = Just from })
+    modify (\s -> s { smtpMail = addMailFrom (smtpMail s) from })
     liftIO $ respond250 h
 
-commandHandleRCPT :: Handle -> ForwardPath -> SMTPConfig -> EmailS ()
+commandHandleRCPT :: Handle -> ForwardPath -> SMTPConfig -> CCStateS ()
 commandHandleRCPT h to config = do
     let Path _ addr = to :: Path
     isAuth <- gets (\s -> identified s)
-    size <- gets (\s -> length $ mailTo s)
+    size <- gets (\s -> length $  mailTo $ smtpMail s)
     isAllowed <- liftIO $ isAllowedRCPT addr isAuth
     if isAllowed
         then do if size < 101
-                    then do modify (\s -> s { mailTo = (to:mailTo s) })
+                    then do modify (\s -> s { smtpMail = addMailTo (smtpMail s) to })
                             liftIO $ respond250 h
                     else liftIO $ respond h 452 "too many recipients"
         else let (EmailAddress _ dom) = addr
@@ -225,7 +263,7 @@ commandHandleRCPT h to config = do
         isAllowedRCPT _    (Just _) = return True
         isAllowedRCPT addr Nothing  = isLocalAddress (storageDir config) addr
 
-authentifyPlain :: Handle -> SMTPConfig -> BC.ByteString -> EmailS ()
+authentifyPlain :: Handle -> SMTPConfig -> BC.ByteString -> CCStateS ()
 authentifyPlain h config buff =
     case serverAuthPlain buff of
         Left err         -> liftIO $ respond h 501 "5.5.2: cannot decode. Is it base64?"
@@ -239,7 +277,7 @@ authentifyPlain h config buff =
                                 liftIO $ respond h 235 "2.7.0 Authentication granted"
                         else liftIO $ respond h 535 "Authentication failed"
 
-commandHandleAUTH :: Handle -> SMTPConfig -> AuthType -> Maybe String -> EmailS ()
+commandHandleAUTH :: Handle -> SMTPConfig -> AuthType -> Maybe String -> CCStateS ()
 commandHandleAUTH h config PLAIN mTxt =
     case mTxt of
         Nothing -> do liftIO $ respond334 h
@@ -249,21 +287,24 @@ commandHandleAUTH h config PLAIN mTxt =
 commandHandleAUTH h config authType mTxt =
     liftIO $ respond504 h
 
+commandHandleDATA :: Handle -> SMTPConfig -> CCStateS ()
 commandHandleDATA h config = do
-    clientDomain <- gets (\s -> mailClient s)
-    mfromEmail   <- gets (\s -> mailFrom   s)
-    rcptEmails   <- gets (\s -> not.null $ mailTo s)
-    case (mfromEmail, rcptEmails) of
-        (Nothing       , _    ) -> liftIO $ respond h 503 "use command MAIL first"
-        (_             , False) -> liftIO $ respond h 503 "use command RCPT first"
-        (Just fromEmail, _    ) -> do
-		    filename     <- liftIO $ generateUniqueFilename clientDomain (show fromEmail)
-		    modify (\s -> s { mailData = filename })
-		    email <- gets (\s -> s)
+    mdc          <- gets (\s -> domainClient s)
+    mfromEmail   <- gets (\s -> mailFrom $ smtpMail s)
+    rcptEmails   <- gets (\s -> not.null $ mailTo $ smtpMail s)
+    case (mdc, mfromEmail, rcptEmails) of
+        (Nothing, _        , _    ) -> liftIO $ respond h 503 "use command EHLO first"
+        (_      , Nothing  , _    ) -> liftIO $ respond h 503 "use command MAIL first"
+        (_      , _        , False) -> liftIO $ respond h 503 "use command RCPT first"
+        (Just dc, Just from, _    ) -> do
+		    filename <- liftIO $ generateUniqueFilename dc (show from)
+		    modify (\s -> s { smtpMail = addMailData (smtpMail s) filename })
+		    email <- gets (\s -> smtpMail s)
+		    mtype <- gets (\s -> smtpType s)
 		    liftIO $ do
 		        let filepath = (incomingDir $ storageDir config) </> filename
 		        respond354 h -- say: go on! Don't be shy, give me your data
-		        createIncomingDataFile (storageDir config) (smtpMxDomain config) email
+		        createIncomingDataFile (storageDir config) (smtpMxDomain config) dc mtype email
 		        readMailData h filepath
 		        respond250 h
     where
@@ -280,10 +321,10 @@ commandHandleRSET h = do
     liftIO $ respond250 h
     return $ CPAGAIN
 
-doClearBuffer :: EmailS ()
+doClearBuffer :: CCStateS ()
 doClearBuffer = modify clearBuffers
     where
-        clearBuffers s = s { mailData = "", mailFrom = Nothing, mailTo = [] }
+        clearBuffers s = s { smtpMail = emptyEmail }
 
 data CommandProcessorERROR
     = CPQUIT
@@ -291,7 +332,7 @@ data CommandProcessorERROR
     | CPAGAIN
     | CPVRFY String
 
-commandProcessor :: SMTPConfig -> Handle -> EmailS (CommandProcessorERROR)
+commandProcessor :: SMTPConfig -> Handle -> CCStateS (CommandProcessorERROR)
 commandProcessor config h = do
     mbuff <- liftIO $ timeout (5 * 60 * 1000000) $ BC.hGetSome h 2048
     case mbuff of

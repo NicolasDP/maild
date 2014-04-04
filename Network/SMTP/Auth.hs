@@ -7,23 +7,15 @@
 -- Portability : unknown
 --
 module Network.SMTP.Auth
-    ( UserName
-    , Password
-    , AuthType(..)
-    , clientAuth
+    (
+      clientAuth
     , serverAuthPlain 
     ) where
 
+import Network.SMTP.Types
+
 import qualified Data.ByteString.Base64 as B64 (encode, decode)
 import qualified Data.ByteString.Char8  as BC
-
-type UserName = BC.ByteString
-type Password = BC.ByteString
-data AuthType
-    = PLAIN
-    | LOGIN
-    | CRAM_MD5
-    deriving (Read, Show, Eq)
 
 clientPlain :: UserName -> Password -> BC.ByteString
 clientPlain user passwd =

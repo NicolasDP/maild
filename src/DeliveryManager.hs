@@ -21,6 +21,7 @@ module DeliveryManager
 
 import Data.MailStorage (MailStorage(..), isLocalAddress)
 import Network.SMTP.Types
+import Data.Maild.Email
 import Control.Concurrent.STM
 
 import System.FilePath  (FilePath, (</>))
@@ -28,7 +29,7 @@ import System.Directory (createDirectoryIfMissing, copyFile)
 
 data DeliveryManager = DeliveryManager
     { mailStorageDir :: MailStorage
-    }
+    } deriving (Show)
 
 ------------------------------------------------------------------------------
 --                               DeliveryChan                               --

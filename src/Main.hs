@@ -16,12 +16,17 @@ import DeliveryManager
 
 import System.Environment (getArgs, getProgName)
 import System.FilePath  (FilePath, (</>))
+import System.Log.Logger
+import System.Log.Handler (setFormatter)
+import System.Log.Handler.Simple
+import System.Log.Formatter
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar
 
 import Data.MailStorage
-import Data.Configurator
+import Data.Maild.Email
+import Data.Configurator as C
 import Data.Configurator.Types
 
 getMailStorageConfig :: Config -> IO MailStorage
@@ -40,20 +45,72 @@ getSMTPConfigFrom conf ms = do
     return $ SMTPConfig p d c ms
 
 getDeliveryManagerConfig :: Config -> MailStorage -> IO DeliveryManager
-getDeliveryManagerConfig _ ms = return $ DeliveryManager ms
+getDeliveryManagerConfig _ ms = do
+    
+    return $ DeliveryManager ms
 
+configureDefaultLoggingSystem :: IO ()
+configureDefaultLoggingSystem = do
+    -- set the default log level to WARNING for every component
+    updateGlobalLogger rootLoggerName (setLevel WARNING)
+
+logMessage = logM "maild"
+
+logDebug     = logMessage DEBUG
+logInfo      = logMessage INFO
+logNotice    = logMessage NOTICE
+logWarning   = logMessage WARNING
+logError     = logMessage ERROR
+logCritical  = logMessage CRITICAL
+logAlert     = logMessage ALERT
+logEmergency = logMessage EMERGENCY
+
+configureLoggingSystem :: Config -> IO ()
+configureLoggingSystem conf = do
+    lvl <- lookupDefault "WARNING" conf "log.level"
+    updateGlobalLogger rootLoggerName (setLevel $ read lvl)
+    mfile <- C.lookup conf "log.file"
+    filelvl <- lookupDefault "INFO" conf "log.file-level"
+    case mfile of
+        Nothing   -> return ()
+        Just file -> do
+            h <- fileHandler file (read filelvl) >>= \lh -> return $
+                    setFormatter lh (simpleLogFormatter "[$time : $loggername : $prio] $msg")
+            updateGlobalLogger rootLoggerName (addHandler h)
+
+defaultMain :: FilePath -> IO ()
+defaultMain configFile = do
+    -- parse the configuration files
+    logNotice $ "load configuration file: " ++ (show configFile)
+    conf <- load [Required configFile]
+    configureLoggingSystem conf
+    getMap conf >>= \m -> logDebug $ "configuration: " ++ (show m)
+    -- load the Mail Storage configuration
+    ms <- getMailStorageConfig conf
+    logDebug $ "MailStorageConfig: " ++ (show ms)
+    -- load the SMTP configuration
+    config <- getSMTPConfigFrom conf ms
+    logDebug $ "SMTPConfig: " ++ (show config)
+    -- load the delivery manager configuration
+    dmConfig <- getDeliveryManagerConfig conf ms
+    logDebug $ "DeliveryManagerConfig: " ++ (show dmConfig)
+
+    -- create a DeliveryChan
+    dmChan <- newDeliveryChan
+    -- launch the DeliveryManager
+    logInfo "start delivery manager"
+    forkIO $ runDeliveryManager dmConfig dmChan
+    -- Now launch the SMTP Server
+    startSMTPServer config dmChan
+
+main :: IO ()
 main = do
+    configureDefaultLoggingSystem
     args <- getArgs
     name <- getProgName
     case args of
-        [configFile] -> do conf <- load [Required configFile]
-                           ms <- getMailStorageConfig conf
-                           config <- getSMTPConfigFrom conf ms
-                           dmConfig <- getDeliveryManagerConfig conf ms
-                           dmChan <- newDeliveryChan
-                           forkIO $ runDeliveryManager dmConfig dmChan
-                           startSMTPServer config dmChan
-        _           -> putStrLn $ "usage: " ++ name ++ " <configuration file>"
+        [configFile] -> defaultMain configFile
+        _            -> putStrLn $ "usage: " ++ name ++ " <configuration file>"
 
 startSMTPServer config dmChan = do
     smtpChan <- newSMTPChan 
@@ -65,9 +122,7 @@ recvLoop config dmChan smtpChan = do
     -- We received a new email. So, move it from *incoming* directory to
     -- *fordelivery* directory
     fromIncomingToFordelivery (storageDir config) email
-    -- now we need to notify the mail manager to require him to deliver the
-    -- message to the corresponding mail box or! to forward it to an other
-    -- postfix server
+    -- forward the email to the delivery manager
     deliverEmail dmChan email
     recvLoop config dmChan smtpChan
 
@@ -80,6 +135,7 @@ runServerOnPort config chan = withSocketsDo $ do
     let port = fromIntegral $ smtpPort config
     socket <- listenOn $ PortNumber port
     connections <- newMVar 0
+    logInfo $ "start SMTP server on port: " ++ (show $ smtpPort config)
     acceptConnection config connections socket chan
 
 acceptConnection :: SMTPConfig -> MVar Int -> Socket -> SMTPChan -> IO ()
@@ -100,11 +156,12 @@ acceptConnection config connections sock chan = do
 
 runDeliveryManager dmc dmChan = do
     email <- getNextEmailToDeliver dmChan
+    noticeM "DeliveryManager" $ "received new email: " ++ (show email)
     -- New email to deliver:
     -- -1- deliver to local users:
     email' <- deliverEmailToLocalRCPT dmc email
     -- -2- forward to distant users:
     case mailTo email' of
         [] -> deleteDataFromDeliveryDir (mailStorageDir dmc) email'
-        l  -> putStrLn "TODO: forward it to distant users"
+        l  -> errorM "DeliveryManager" $ "cannot forward email to: " ++ (show l)
     runDeliveryManager dmc dmChan

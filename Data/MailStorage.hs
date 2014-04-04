@@ -37,6 +37,7 @@ module Data.MailStorage
     ) where
 
 import Network.SMTP.Types
+import Data.Maild.Email
 
 import qualified Crypto.Hash as Hash
 
@@ -86,7 +87,7 @@ data MailStorage = MailStorage
     , forDeliveryDir :: FilePath
     , usersDir       :: FilePath
     , domainsDir     :: FilePath
-    } deriving (Eq)
+    } deriving (Show, Eq)
 
 -- | get mailStorage:
 getMailStorage :: FilePath -> IO (Maybe MailStorage)
@@ -157,12 +158,14 @@ generateUniqueFilename client from = do
 
 createIncomingDataFile :: MailStorage
                        -> Domain
+                       -> Domain
+                       -> Maybe SMTPType
                        -> Email
                        -> IO ()
-createIncomingDataFile ms domain email = do
+createIncomingDataFile ms by from mtype email = do
     time <- timeCurrent >>= \t -> return $ timePrint myTimeFormat t
     let receivedString = "Received: " ++ fromDomainString ++ withString
-                        ++ cwfs ++ byDomainString ++ " ; " ++ time
+                        ++ cwfs ++ byDomainString ++ "; " ++ time
                         ++ "\r\n"
     BC.writeFile inComingPath $ BC.pack receivedString
     where
@@ -172,9 +175,9 @@ createIncomingDataFile ms domain email = do
         cwfs :: String
         cwfs = "\r\n  "
 
-        fromDomainString = "FROM " ++ (mailClient email)
-        withString = maybe [] (\t -> " WITH " ++ (show t)) (smtpType email)
-        byDomainString   = "BY "   ++ domain
+        fromDomainString = "From " ++ from
+        withString = maybe "" (\t -> " With " ++ (show t)) mtype
+        byDomainString   = "By "   ++ by
 
         myTimeFormat :: TimeFormatString
         myTimeFormat =

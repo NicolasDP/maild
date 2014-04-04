@@ -20,6 +20,7 @@ executable maild
   -- other-extensions:    
   build-depends:       base >=4.7 && <4.8
                      , network
+                     , hslogger
                      , configurator
                      , filepath
                      , maild
@@ -31,10 +32,13 @@ executable maild
 Library
   exposed-modules:     Network.SMTP
                      , Network.SMTP.Types
+                     , Network.SMTP.Parser
                      , Network.SMTP.Auth
                      , Data.MailStorage
+                     , Data.Maild.Email
   build-depends:       base >=4.7 && <4.8
                      , bytestring
+                     , hslogger
                      , attoparsec
                      , stm
                      , mtl
