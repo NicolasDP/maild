@@ -20,7 +20,6 @@ module Network.SMTP
       -- ** Helpers
     , respond
       -- * SMTP Client
-    , SMTPConnection
     , smtpOpenConnection
     , smtpInitConnection
     , smtpCloseConnection
@@ -34,6 +33,7 @@ import Network
 import Network.SMTP.Types
 import Network.SMTP.Auth
 import Network.SMTP.Parser
+import Network.SMTP.Connection
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.STM
@@ -363,27 +363,6 @@ commandProcessor config h = do
 --                               SMTPClient                                 --
 ------------------------------------------------------------------------------
 
-data SMTPConnection = SMTPConnection
-    { hcGetLine :: IO BC.ByteString
-    , hcGetSome :: Int -> IO BC.ByteString
-    , hcPut     :: BC.ByteString -> IO ()
-    , hcFlush   :: IO ()
-    , hcClose   :: IO ()
-    , hcIsOpen  :: IO Bool
-    }
-
-handleToSMTPConnection :: Handle -> SMTPConnection
-handleToSMTPConnection h =
-    SMTPConnection
-        { hcGetLine = BC.hGetLine h
-        , hcGetSome = BC.hGetSome h
-        , hcPut     = \bs -> BC.hPut h bs >> hFlush h
-        , hcFlush   = hFlush h
-        , hcClose   = do isopen <- hIsOpen h
-                         if isopen then hClose h else return ()
-        , hcIsOpen  = hIsOpen h
-        }
-
 -- | Close the given SMTP Connection and return the handle
 -- the server has certainly closed the connection, but let user manages it
 smtpCloseConnection :: SMTPConnection
@@ -414,7 +393,7 @@ smtpInitConnection con domain = do
         else do res <- smtpTryCommand (HELO domain) con RC250Ok
                 if res
                     then return True
-                    else putStrLn "Service error EHLO" >> return False
+                    else putStrLn "Service error HELO" >> return False
 
 smtpSendEmail :: ReversePath   -- the sender
               -> [ForwardPath] -- recipients

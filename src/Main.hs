@@ -193,11 +193,8 @@ forwardEmail dmc from (to:tos) filepath = do
                 Nothing  -> do noticeM "DeliveryManager" $ "can't send to " ++ (show d)
                                tryToSendMail ds fp rps
                 Just con -> do
-                    debugM "DeliveryManager" $ "readFile: " ++ (show filepath)
                     contents <- BC.readFile filepath
-                    debugM "DeliveryManager" "send the mail"
                     b <- smtpSendEmail fp rps contents con
-                    debugM "DeliveryManager" $ "close the connection. worked: " ++ (show b)
                     smtpCloseConnection con
                     return b
 
@@ -237,7 +234,7 @@ runDeliveryManager dmc dmChan = do
     -- New email to deliver:
     -- -1- deliver to local users:
     email' <- deliverEmailToLocalRCPT dmc email
-    -- -2- forward to distant users:
+    -- -2- forward to distant recipients:
     when (not $ null $ mailTo email') $ do
         remains <- tryToForward dmc email'
         case remains of

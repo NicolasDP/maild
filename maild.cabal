@@ -36,6 +36,7 @@ Library
                      , Network.SMTP.Types
                      , Network.SMTP.Parser
                      , Network.SMTP.Auth
+                     , Network.SMTP.Connection
                      , Data.MailStorage
                      , Data.Maild.Email
                      , Data.DeliveryManager
