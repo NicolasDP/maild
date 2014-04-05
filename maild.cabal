@@ -43,6 +43,7 @@ Library
                      , bytestring
                      , hslogger
                      , attoparsec
+                     , network
                      , stm
                      , mtl
                      , hourglass

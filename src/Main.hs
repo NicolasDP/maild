@@ -22,6 +22,7 @@ import System.Log.Formatter
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar
+import Control.Monad (when)
 import GHC.IO.Handle (hClose)
 
 import Data.List
@@ -164,7 +165,6 @@ findMXofDom domain = do
     rs <- DNS.makeResolvSeed DNS.defaultResolvConf
     list <- DNS.withResolver rs $ \resolver ->
                 DNS.lookupMX resolver (BC.pack domain)
-    putStrLn $ show list
     return $ case list of
         Left  _ -> []
         Right l -> map (\(d, p) -> (BC.unpack d, p)) l
@@ -187,16 +187,19 @@ forwardEmail dmc from (to:tos) filepath = do
         tryToSendMail :: [(Domain, Int)] -> ForwardPath -> [ReversePath] -> IO Bool
         tryToSendMail []     _   _  = return $ False
         tryToSendMail (d:ds) fp rps = do
-            h <- connectTo ((fst d)) (PortNumber 25)
-            econ <- smtpInitConnection h (currentDomain dmc)
-            case econ of
-                Left  _     -> tryToSendMail ds fp rps
-                Right con   -> do
+            infoM "DeliveryManager" $ "try to send to domain: " ++ (show d)
+            mcon <- smtpOpenConnection (fst d) (PortNumber 25) (currentDomain dmc)
+            case mcon of
+                Nothing  -> do noticeM "DeliveryManager" $ "can't send to " ++ (show d)
+                               tryToSendMail ds fp rps
+                Just con -> do
+                    debugM "DeliveryManager" $ "readFile: " ++ (show filepath)
                     contents <- BC.readFile filepath
-                    smtpSendEmail fp rps contents con
+                    debugM "DeliveryManager" "send the mail"
+                    b <- smtpSendEmail fp rps contents con
+                    debugM "DeliveryManager" $ "close the connection. worked: " ++ (show b)
                     smtpCloseConnection con
-                    hClose h
-                    return True
+                    return b
 
 tryToSendMail :: DeliveryManager -> ReversePath -> [ForwardPath] -> FilePath -> IO [ForwardPath]
 tryToSendMail dmc from tos filepath = do
@@ -235,7 +238,10 @@ runDeliveryManager dmc dmChan = do
     -- -1- deliver to local users:
     email' <- deliverEmailToLocalRCPT dmc email
     -- -2- forward to distant users:
-    case mailTo email' of
-        [] -> deleteDataFromDeliveryDir (mailStorageDir dmc) email'
-        l  -> tryToForward dmc email' >> return () -- TODO: send the email to an other chan
+    when (not $ null $ mailTo email') $ do
+        remains <- tryToForward dmc email'
+        case remains of
+           Nothing      -> noticeM "DeliveryManager" "the email is gone"
+           Just email'' -> warningM "DeliveryManager" $ "can't send to: " ++ (show email'')
+    deleteDataFromDeliveryDir (mailStorageDir dmc) email'
     runDeliveryManager dmc dmChan

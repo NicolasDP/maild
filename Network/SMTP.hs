@@ -21,6 +21,7 @@ module Network.SMTP
     , respond
       -- * SMTP Client
     , SMTPConnection
+    , smtpOpenConnection
     , smtpInitConnection
     , smtpCloseConnection
     , smtpSendEmail
@@ -29,6 +30,7 @@ module Network.SMTP
     , smtpReadResponses
     ) where
 
+import Network
 import Network.SMTP.Types
 import Network.SMTP.Auth
 import Network.SMTP.Parser
@@ -178,7 +180,9 @@ rejectClient config h = do
 ------------------------------------------------------------------------------
 
 respond :: Handle -> Int -> String -> IO ()
-respond h code msg = BC.hPutStrLn h $ BC.pack $ (show code) ++ " " ++ msg ++ "\r"
+respond h code msg = do
+    BC.hPutStrLn h $ BC.pack $ (show code) ++ " " ++ msg ++ "\r"
+    hFlush h
 
 respond' h code []     =    BC.hPutStrLn h $ BC.pack $ (show code) ++ "\r"
 respond' h code [s]    =    respond h code s
@@ -360,32 +364,57 @@ commandProcessor config h = do
 ------------------------------------------------------------------------------
 
 data SMTPConnection = SMTPConnection
-    { handle :: Handle
-    } deriving (Eq)
+    { hcGetLine :: IO BC.ByteString
+    , hcGetSome :: Int -> IO BC.ByteString
+    , hcPut     :: BC.ByteString -> IO ()
+    , hcFlush   :: IO ()
+    , hcClose   :: IO ()
+    , hcIsOpen  :: IO Bool
+    }
+
+handleToSMTPConnection :: Handle -> SMTPConnection
+handleToSMTPConnection h =
+    SMTPConnection
+        { hcGetLine = BC.hGetLine h
+        , hcGetSome = BC.hGetSome h
+        , hcPut     = \bs -> BC.hPut h bs >> hFlush h
+        , hcFlush   = hFlush h
+        , hcClose   = do isopen <- hIsOpen h
+                         if isopen then hClose h else return ()
+        , hcIsOpen  = hIsOpen h
+        }
 
 -- | Close the given SMTP Connection and return the handle
 -- the server has certainly closed the connection, but let user manages it
 smtpCloseConnection :: SMTPConnection
-                    -> IO Handle
-smtpCloseConnection (SMTPConnection h) =
-    smtpSendCommand QUIT (SMTPConnection h) >> return h
+                    -> IO ()
+smtpCloseConnection con = do
+    smtpSendCommand QUIT con
+    hcClose con
+
+smtpOpenConnection :: Domain -> PortID -> Domain -> IO (Maybe (SMTPConnection))
+smtpOpenConnection d port dom = do
+    h <- connectTo d port
+    res <- smtpInitConnection (handleToSMTPConnection h) dom
+    if res
+        then return $ Just $ handleToSMTPConnection h
+        else do putStrLn $ "can't connect to domain " ++ d
+                return Nothing
 
 -- | After opening a socket, here is the way to know if the server is
 -- providing an SMTP service (you still need to parse the return value)
-smtpInitConnection :: Handle -- ^ the distant connection handler (freshly opened)
+smtpInitConnection :: SMTPConnection
                    -> Domain -- ^ the service domain name (us)
-                   -> IO (Either String SMTPConnection)
-smtpInitConnection h domain = do
+                   -> IO Bool
+smtpInitConnection con domain = do
     -- when client connects to server, server immediately returns a code.
-    respl <- smtpReadResponses $ SMTPConnection h
+    respl <- smtpReadResponses con
     if not $ checkResponses RC220ServiceReady respl
-        then return $ Left "service not ready"
-        else do res <- smtpTryCommand (EHLO domain) con RC250Ok
+        then putStrLn ("service not ready: " ++ (show respl)) >> return False
+        else do res <- smtpTryCommand (HELO domain) con RC250Ok
                 if res
-                    then return $ Right con
-                    else return $ Left "Service error EHLO"
-    where
-        con = SMTPConnection h
+                    then return True
+                    else putStrLn "Service error EHLO" >> return False
 
 smtpSendEmail :: ReversePath   -- the sender
               -> [ForwardPath] -- recipients
@@ -399,9 +428,9 @@ smtpSendEmail from to content con = do
     sendTheData con
     where
         sendTheData :: SMTPConnection -> IO Bool
-        sendTheData (SMTPConnection h) = do
-            BC.hPut h $ BC.concat [content, BC.pack "\r\n.\r\n"]
-            l <- smtpReadResponses $ SMTPConnection h
+        sendTheData con = do
+            hcPut con $ BC.concat [content, BC.pack "\r\n.\r\n"]
+            l <- smtpReadResponses con
             return $ case l of
                 [Right (Response (Right RC250Ok) _ _)] -> True
                 _                                      -> False
@@ -411,11 +440,13 @@ smtpTryCommand :: Command
                -> ResponseCode
                -> IO Bool
 smtpTryCommand cmd con expected = do
+    putStrLn $ "send: " ++ (show cmd)
     respList <- smtpSendCommand cmd con
+    putStrLn $ " got: " ++ (show respList)
     return $ checkResponses expected respList
 
 checkResponses :: ResponseCode -> [Either String Response] -> Bool
-checkResponses _ [] = False -- no responses
+checkResponses _ [] = error "No response... should not fall here"
 checkResponses c [resp]    = checkResponse c resp -- the only or last response
 checkResponses c (resp:rs) = if checkResponse c resp then checkResponses c rs else False
 
@@ -444,20 +475,25 @@ smtpSendCommand cmd           _ = return $ [Left $ "not supported yet: " ++ (sho
 
 -- | Send a specific string to the server
 -- no need to add the command line terminal chars (CRLF) they will be append
-smtpSendString :: SMTPConnection -- ^ the connected socket
+smtpSendString :: SMTPConnection
                -> String         -- ^ the command to send
                -> IO [Either String Response]
-smtpSendString (SMTPConnection h) msg = do
-    BC.hPutStrLn h $ BC.pack $ msg ++ "\r"
-    smtpReadResponses $ SMTPConnection h
+smtpSendString con msg = do
+    hcPut con $ BC.pack $ msg ++ "\r\n"
+    smtpReadResponses con
 
 smtpReadResponses :: SMTPConnection
                   -> IO [Either String Response]
-smtpReadResponses (SMTPConnection h) = do
-    buff <- BC.hGetLine h 
-    case parseResponseByteString buff of
-        Left err -> return $ [Left err]
-        Right r  -> do
-            if endOfResponse r
-                then return [Right r]
-                else smtpReadResponses (SMTPConnection h) >>= \rs -> return $ (Right r):rs
+smtpReadResponses con = do
+    -- mbuff <- timeout (5 * 60 * 1000000) $ hcGetSome con 2048
+    mbuff <- hcGetSome con 2048 >>= \s -> return $ Just s
+    case mbuff of
+        Nothing   -> return [Left "server didn't respond in less than 5min"]
+        Just buff -> do
+            putStrLn $ "Received: " ++ (show buff)
+            case parseResponseByteString buff of
+                Left err -> return $ [Left err]
+                Right r  -> do
+                    if endOfResponse r
+                        then return [Right r]
+                        else smtpReadResponses con >>= \rs -> return $ (Right r):rs

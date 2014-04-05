@@ -225,8 +225,8 @@ parseResponseLine c bool = do
 
 parseResponse :: Parser Response
 parseResponse
-    =   parseResponseLine ' ' True
-    <|> parseResponseLine '-' False
+    =   parseResponseLine ' ' True  -- End of response
+    <|> parseResponseLine '-' False -- we can expect some more lines
 
 parseResponseString :: String -> Either String Response
 parseResponseString s = parseResponseByteString $ BC.pack s
