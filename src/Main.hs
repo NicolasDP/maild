@@ -11,8 +11,7 @@ import Network
 import Network.SMTP
 import Network.SMTP.Types
 import Network.SMTP.Auth
-
-import DeliveryManager
+import qualified Network.DNS as DNS
 
 import System.Environment (getArgs, getProgName)
 import System.FilePath  (FilePath, (</>))
@@ -23,11 +22,16 @@ import System.Log.Formatter
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar
+import GHC.IO.Handle (hClose)
 
+import Data.List
+import Data.Function (on)
 import Data.MailStorage
 import Data.Maild.Email
 import Data.Configurator as C
 import Data.Configurator.Types
+import Data.DeliveryManager
+import qualified Data.ByteString.Char8 as BC
 
 getMailStorageConfig :: Config -> IO MailStorage
 getMailStorageConfig conf = do
@@ -45,9 +49,9 @@ getSMTPConfigFrom conf ms = do
     return $ SMTPConfig p d c ms
 
 getDeliveryManagerConfig :: Config -> MailStorage -> IO DeliveryManager
-getDeliveryManagerConfig _ ms = do
-    
-    return $ DeliveryManager ms
+getDeliveryManagerConfig conf ms = do
+    d <- require conf "smtp.domain"
+    return $ DeliveryManager ms d
 
 configureDefaultLoggingSystem :: IO ()
 configureDefaultLoggingSystem = do
@@ -154,6 +158,76 @@ acceptConnection config connections sock chan = do
 --                      DeliveryManager: MainLoop                           --
 ------------------------------------------------------------------------------
 
+-- find the MX server which corresponds to this domain
+findMXofDom :: Domain -> IO [(Domain, Int)]
+findMXofDom domain = do
+    rs <- DNS.makeResolvSeed DNS.defaultResolvConf
+    list <- DNS.withResolver rs $ \resolver ->
+                DNS.lookupMX resolver (BC.pack domain)
+    putStrLn $ show list
+    return $ case list of
+        Left  _ -> []
+        Right l -> map (\(d, p) -> (BC.unpack d, p)) l
+
+forwardEmail :: DeliveryManager
+             -> ReversePath
+             -> [[ForwardPath]]
+             -> FilePath
+             -> IO [[ForwardPath]]
+forwardEmail _   _    []       _        = return []
+forwardEmail dmc from (to:tos) filepath = do
+    ret <- forwardEmail dmc from tos filepath
+    lMx <- (findMXofDom (domainpart $ address $ head to))
+           >>= \l -> return $ sortBy (compare `on` snd) l
+    sended <- tryToSendMail lMx from to
+    return $ if sended
+        then ret
+        else (to:ret)
+    where
+        tryToSendMail :: [(Domain, Int)] -> ForwardPath -> [ReversePath] -> IO Bool
+        tryToSendMail []     _   _  = return $ False
+        tryToSendMail (d:ds) fp rps = do
+            h <- connectTo ((fst d)) (PortNumber 25)
+            econ <- smtpInitConnection h (currentDomain dmc)
+            case econ of
+                Left  _     -> tryToSendMail ds fp rps
+                Right con   -> do
+                    contents <- BC.readFile filepath
+                    smtpSendEmail fp rps contents con
+                    smtpCloseConnection con
+                    hClose h
+                    return True
+
+tryToSendMail :: DeliveryManager -> ReversePath -> [ForwardPath] -> FilePath -> IO [ForwardPath]
+tryToSendMail dmc from tos filepath = do
+    let ltos = sortPerDomain tos []
+    rtos <- forwardEmail dmc from ltos filepath
+    return $ concat rtos
+    where
+        sortPerDomain :: [ForwardPath] -> [[ForwardPath]] -> [[ForwardPath]]
+        sortPerDomain []  res = res
+        sortPerDomain fps res =
+            let (lfps, rfps) = foldr getCommonForwardPath ([], []) fps
+            in sortPerDomain rfps (lfps:res)
+
+        getCommonForwardPath :: ForwardPath -> ([ForwardPath], [ForwardPath]) -> ([ForwardPath], [ForwardPath])
+        getCommonForwardPath fp ([], l)     = ([fp], l)
+        getCommonForwardPath fp (rp:rps, l) =
+            if (domainpart $ address fp) == (domainpart $ address rp)
+                then (fp:rp:rps,    l)
+                else (   rp:rps, fp:l)
+
+tryToForward :: DeliveryManager -> Email -> IO (Maybe Email)
+tryToForward dmc email =
+    case mailFrom email of
+        Nothing   -> return Nothing -- should not fall here
+        Just from -> do
+            tos <- tryToSendMail dmc from (mailTo email) ((forDeliveryDir $ mailStorageDir dmc) </> (mailData email))
+            return $ case tos of
+                [] -> Nothing
+                _  -> Just $ email { mailTo = tos }
+
+runDeliveryManager :: DeliveryManager -> DeliveryChan -> IO ()
 runDeliveryManager dmc dmChan = do
     email <- getNextEmailToDeliver dmChan
     noticeM "DeliveryManager" $ "received new email: " ++ (show email)
@@ -163,5 +237,5 @@ runDeliveryManager dmc dmChan = do
     -- -2- forward to distant users:
     case mailTo email' of
         [] -> deleteDataFromDeliveryDir (mailStorageDir dmc) email'
-        l  -> errorM "DeliveryManager" $ "cannot forward email to: " ++ (show l)
+        l  -> tryToForward dmc email' >> return () -- TODO: send the email to an other chan
     runDeliveryManager dmc dmChan

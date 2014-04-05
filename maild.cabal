@@ -20,6 +20,8 @@ executable maild
   -- other-extensions:    
   build-depends:       base >=4.7 && <4.8
                      , network
+                     , bytestring
+                     , dns
                      , hslogger
                      , configurator
                      , filepath
@@ -36,6 +38,7 @@ Library
                      , Network.SMTP.Auth
                      , Data.MailStorage
                      , Data.Maild.Email
+                     , Data.DeliveryManager
   build-depends:       base >=4.7 && <4.8
                      , bytestring
                      , hslogger

@@ -1,12 +1,12 @@
 -- |
--- Module      : DeliveryManager
+-- Module      : Data.DeliveryManager
 -- License     : BSD-Style
 --
 -- Maintainer  : Nicolas DI PRIMA <nicolas@di-prima.fr>
 -- Stability   : experimental
 -- Portability : unknown
 --
-module DeliveryManager
+module Data.DeliveryManager
     ( -- Types
       DeliveryManager(..)
       -- * DeliverChan
@@ -29,6 +29,7 @@ import System.Directory (createDirectoryIfMissing, copyFile)
 
 data DeliveryManager = DeliveryManager
     { mailStorageDir :: MailStorage
+    , currentDomain  :: Domain
     } deriving (Show)
 
 ------------------------------------------------------------------------------

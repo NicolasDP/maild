@@ -32,8 +32,10 @@ type Domain = String
 -- > local-part@domain.net
 type LocalPart = String
 
-data EmailAddress = EmailAddress LocalPart Domain
-    deriving (Eq)
+data EmailAddress = EmailAddress
+    { localpart  :: LocalPart
+    , domainpart :: Domain
+    } deriving (Eq)
 
 instance Show EmailAddress where
     show (EmailAddress local domain) = local ++ "@" ++ domain
@@ -44,8 +46,10 @@ instance Show EmailAddress where
 
 -- | This format SHOULD not be used, but keep it for compatibility with RFC821
 -- See RFC5321, appendix C
-data Path = Path [Domain] EmailAddress
-    deriving (Show, Eq)
+data Path = Path
+    { paths   :: [Domain]
+    , address :: EmailAddress
+    } deriving (Show, Eq)
 
 -- | A minor tool to be able to show a Path
 showPath :: Path -> String

@@ -22,6 +22,8 @@ module Network.SMTP
       -- * SMTP Client
     , SMTPConnection
     , smtpInitConnection
+    , smtpCloseConnection
+    , smtpSendEmail
     , smtpSendCommand
     , smtpSendString
     , smtpReadResponses
@@ -387,7 +389,7 @@ smtpInitConnection h domain = do
 
 smtpSendEmail :: ReversePath   -- the sender
               -> [ForwardPath] -- recipients
-              -> BC.ByteString    -- mail content
+              -> BC.ByteString -- mail content
               -> SMTPConnection
               -> IO Bool
 smtpSendEmail from to content con = do
