@@ -21,58 +21,29 @@ import Data.Maild.Email
 
 import qualified Data.ByteString.Char8  as BC
 import Data.List                        as L (intercalate, takeWhile, dropWhile, tail)
-import Data.Char (toUpper, isAlphaNum)
+import Data.Char                             (toUpper, isAlphaNum, isControl)
 import Data.Attoparsec.ByteString.Char8 as AC
 
 import Control.Applicative ((<|>))
 
-parseParameterString :: Parser String
-parseParameterString = do
-    char ' '
-    param <- AC.many' $ satisfy $ \c -> isAlphaNum c || c == '.' || c == '-'
-    skipEndOfLine
-    return param
+-- | RFC5321 (4.1.2) says a ReversePath is a Path or empty.
+parseReversePath :: Parser ReversePath
+parseReversePath =
+    do  parsePath >>= \path -> return $ Just path
+    <|> do string "<>"
+           return Nothing
 
-parseParameterMaybeString :: Parser (Maybe String)
-parseParameterMaybeString =
-    do  skipEndOfLine
-        return Nothing
-    <|> do s <- parseParameterString
-           return $ Just s
+-- | a forward path is a Path
+parseForwardPath :: Parser ForwardPath
+parseForwardPath = parsePath
 
-parseParameterB64String :: Parser String
-parseParameterB64String = do
-    char ' '
-    param <- AC.many' $ satisfy $ \c -> isAlphaNum c || c == '='
-    skipEndOfLine
-    return param
-
-parseParameterB64MaybeString :: Parser (Maybe String)
-parseParameterB64MaybeString =
-    do  skipEndOfLine
-        return Nothing
-    <|> do s <- parseParameterB64String
-           return $ Just s
-
-skipEndOfLine :: Parser ()
-skipEndOfLine = char '\r' >> char '\n' >> return ()
-
-------------------------------------------------------------------------------
---                               Command                                    --
-------------------------------------------------------------------------------
-
-parseDomain :: Parser Domain
-parseDomain = AC.many' $ satisfy $ \c -> isAlphaNum c || c == '.' || c == '-'
-
-parseLocalPart :: Parser LocalPart
-parseLocalPart = parseDomain
-
-parseMailBox :: Parser EmailAddress
-parseMailBox = do
-    local <- parseLocalPart
-    char '@'
-    domain <- parseDomain
-    return $ EmailAddress local domain
+parsePath :: Parser Path
+parsePath = do
+    char '<'
+    list <- parseAtDomainList
+    mail <- parseMailBox
+    char '>'
+    return $ Path list mail
 
 parseAtDomainList :: Parser [Domain]
 parseAtDomainList =
@@ -89,54 +60,143 @@ parseAtDomainList =
             <|> do char ':'
                    return []
 
-parsePath :: Parser Path
-parsePath = do
-    char '<'
-    list <- parseAtDomainList
-    mail <- parseMailBox
-    char '>'
-    return $ Path list mail
+------------------------------------------------------------------------------
+--                               Extension parameters                       --
+------------------------------------------------------------------------------
 
-parseReversePath :: Parser ReversePath
-parseReversePath = parsePath
+parseMailParameters :: Parser MailParameters
+parseMailParameters = parseESMTPParameters
 
-parseForwardPath :: Parser ForwardPath
-parseForwardPath = parsePath
+parseRcptParameters :: Parser RcptParameters
+parseRcptParameters = parseESMTPParameters
 
-parseCommandHELO :: Parser String
-parseCommandHELO = do
-    char ' '
-    param <- parseDomain
-    skipEndOfLine
+parseESMTPParameters :: Parser [ESMTPParameter]
+parseESMTPParameters = do
+    p <- parseESMTPParameter
+    l <- do parseSP
+            parseESMTPParameters
+         <|> return []
+    return $ p:l
+
+parseESMTPParameter :: Parser ESMTPParameter
+parseESMTPParameter = do
+    key <- parseESMTPKeyWord
+    mvalue <- do char '='
+                 value <- parseESMTPValue
+                 return $ Just value
+              <|> return Nothing
+    return $ ESMTPParameter key mvalue
+
+parseESMTPKeyWord :: Parser ESMTPKeyWord
+parseESMTPKeyWord = AC.many' $ satisfy $ \c -> isAlphaNum c || c == '-'
+
+parseESMTPValue :: Parser ESMTPValue
+parseESMTPValue =
+    AC.many' $ satisfy $ \c -> not (isControl c || c == '=' || isSpace c)
+
+------------------------------------------------------------------------------
+--                               domain and address                         --
+------------------------------------------------------------------------------
+
+parseDomain :: Parser Domain
+parseDomain = AC.many' $ satisfy $ \c -> isAlphaNum c || c == '.' || c == '-'
+
+parseLocalPart :: Parser LocalPart
+parseLocalPart = parseDomain
+
+parseMailBox :: Parser EmailAddress
+parseMailBox = do
+    local <- parseLocalPart
+    char '@'
+    domain <- parseDomain
+    return $ EmailAddress local domain
+
+------------------------------------------------------------------------------
+--                               Strings and specials                       --
+------------------------------------------------------------------------------
+
+parseParameterString :: Parser String
+parseParameterString = do
+    parseSP
+    param <- AC.many' $ satisfy $ \c -> isAlphaNum c || c == '.' || c == '-'
     return param
 
-parseCommandEHLO :: Parser String
-parseCommandEHLO = parseCommandHELO
+parseParameterMaybeString :: Parser (Maybe String)
+parseParameterMaybeString =
+    do  s <- parseParameterString
+        return $ Just s
+    <|> return Nothing
 
-parseCommandMAIL :: Parser ReversePath
+parseParameterB64String :: Parser String
+parseParameterB64String = do
+    parseSP
+    param <- AC.many' $ satisfy $ \c -> isAlphaNum c || c == '='
+    return param
+
+parseParameterB64MaybeString :: Parser (Maybe String)
+parseParameterB64MaybeString =
+    do  s <- parseParameterB64String
+        return $ Just s
+    <|> return Nothing
+
+parseSP :: Parser Char
+parseSP = char ' '
+
+parseCRLF :: Parser String
+parseCRLF = parseCR >> parseLF >> return "\r\n"
+
+parseCR :: Parser Char
+parseCR = char '\r'
+
+parseLF :: Parser Char
+parseLF = char '\n'
+
+------------------------------------------------------------------------------
+--                               Command                                    --
+------------------------------------------------------------------------------
+
+parseCommandHELO :: Parser Command
+parseCommandHELO = do
+    parseSP
+    domain <- parseDomain
+    return $ HELO domain
+
+parseCommandEHLO :: Parser Command
+parseCommandEHLO = do
+    parseSP
+    domain <- parseDomain
+    return $ EHLO domain
+
+parseCommandMAIL :: Parser Command
 parseCommandMAIL = do
-    char ' '
-    string <- "FROM:"
-    mail <- parseReversePath
-    skipEndOfLine
-    return mail
+    parseSP
+    string "FROM:"
+    rpath <- parseReversePath
+    eparams <- parseMailParameters
+    return $ MAIL rpath eparams
 
-parseCommandRCPT :: Parser ForwardPath
+parseCommandRCPT :: Parser Command
 parseCommandRCPT = do
-    char ' '
-    string <- "TO:"
-    mail <- parseForwardPath
-    skipEndOfLine
-    return mail
+    parseSP
+    string "TO:"
+    fpath <- parseForwardPath
+    eparams <- parseRcptParameters
+    return $ RCPT fpath eparams
 
-parseCommandEXPN :: Parser String
-parseCommandEXPN = parseParameterString
+parseCommandEXPN :: Parser Command
+parseCommandEXPN = do
+    param <- parseParameterString
+    return $ EXPN param
 
-parseCommandVRFY :: Parser String
-parseCommandVRFY = parseParameterString
+parseCommandVRFY :: Parser Command
+parseCommandVRFY = do
+    param <- parseParameterString
+    return $ VRFY param
 
-parseCommandNOOP :: Parser (Maybe String)
-parseCommandNOOP = parseParameterMaybeString
+parseCommandNOOP :: Parser Command
+parseCommandNOOP = do
+    mparam <- parseParameterMaybeString
+    return $ NOOP mparam
 
 parseParameterAuthType :: Parser AuthType
 parseParameterAuthType = do
@@ -149,32 +209,35 @@ parseParameterAuthType = do
 
 parseCommandAUTH :: Parser Command
 parseCommandAUTH = do
-    char ' '
+    parseSP
     authType <- parseParameterAuthType
     param <- parseParameterB64MaybeString
     return $ AUTH authType param
 
-parseCommandHELP :: Parser (Maybe String)
-parseCommandHELP = parseParameterMaybeString
+parseCommandHELP :: Parser Command
+parseCommandHELP = do
+    mparam <- parseParameterMaybeString
+    return $ HELP mparam
 
 parseCommand :: Parser Command
 parseCommand = do
-    skipSpace -- TODO: it is not RFC...
     cmd <- AC.many' AC.letter_ascii
-    case map toUpper cmd of
-        "HELO" -> parseCommandHELO >>= \s -> return $ HELO s
-        "EHLO" -> parseCommandEHLO >>= \s -> return $ EHLO s
-        "MAIL" -> parseCommandMAIL >>= \s -> return $ MAIL s
-        "RCPT" -> parseCommandRCPT >>= \s -> return $ RCPT s
-        "DATA" -> skipEndOfLine >> return DATA
-        "EXPN" -> parseCommandEXPN >>= \s -> return $ EXPN s
-        "VRFY" -> parseCommandVRFY >>= \s -> return $ VRFY s
-        "HELP" -> parseCommandHELP >>= \l -> return $ HELP l
+    c <- case map toUpper cmd of
+        "HELO" -> parseCommandHELO
+        "EHLO" -> parseCommandEHLO
+        "MAIL" -> parseCommandMAIL
+        "RCPT" -> parseCommandRCPT
+        "DATA" -> return DATA
+        "EXPN" -> parseCommandEXPN
+        "VRFY" -> parseCommandVRFY
+        "HELP" -> parseCommandHELP
         "AUTH" -> parseCommandAUTH
-        "NOOP" -> parseCommandNOOP >>= \s -> return $ NOOP s
-        "RSET" -> skipEndOfLine >> return RSET
-        "QUIT" -> skipEndOfLine >> return QUIT
+        "NOOP" -> parseCommandNOOP
+        "RSET" -> return RSET
+        "QUIT" -> return QUIT
         s      -> return $ INVALCMD s
+    parseCRLF
+    return c
 
 parseCommandString :: String -> Either String Command
 parseCommandString s = parseCommandByteString $ BC.pack s
@@ -220,7 +283,7 @@ parseResponseLine c bool = do
     xyz <- count 3 digit
     char c
     line <- AC.takeWhile $ \c -> c /= '\r'
-    skipEndOfLine
+    parseCRLF
     return $ Response (intToResponseCode $ read xyz) line bool
 
 parseResponse :: Parser Response

@@ -19,6 +19,12 @@ module Network.SMTP.Types
       -- * SMTP Commands
       -- ** Command
     , Command(..)
+      -- ** SMTP extensions
+    , ESMTPKeyWord
+    , ESMTPValue
+    , ESMTPParameter(..)
+    , MailParameters
+    , RcptParameters
       -- * SMTP Responses
     , Response(..)
     , ResponseCode(..)
@@ -67,11 +73,21 @@ data AuthType
 --                               Commands                                   --
 ------------------------------------------------------------------------------
 
+type ESMTPKeyWord = String
+type ESMTPValue   = String
+data ESMTPParameter = ESMTPParameter
+    { paramKey :: ESMTPKeyWord
+    , paramValue :: Maybe ESMTPValue
+    } deriving (Eq, Show)
+
+type MailParameters = [ESMTPParameter]
+type RcptParameters = [ESMTPParameter]
+
 data Command
     = HELO String
     | EHLO String
-    | MAIL ReversePath
-    | RCPT ForwardPath
+    | MAIL ReversePath MailParameters
+    | RCPT ForwardPath RcptParameters
     | DATA
     | EXPN String
     | VRFY String

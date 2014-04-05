@@ -169,36 +169,45 @@ findMXofDom domain = do
         Left  _ -> []
         Right l -> map (\(d, p) -> (BC.unpack d, p)) l
 
-forwardEmail :: DeliveryManager
-             -> ReversePath
-             -> [[ForwardPath]]
-             -> FilePath
+forwardEmail :: DeliveryManager -- ^ configuration
+             -> ReversePath     -- ^ send mail From
+             -> [[ForwardPath]] -- ^ list of list of recipients (grouped per domain)
+             -> FilePath        -- ^ filepath where the data is
              -> IO [[ForwardPath]]
 forwardEmail _   _    []       _        = return []
 forwardEmail dmc from (to:tos) filepath = do
+    -- send the queue:
     ret <- forwardEmail dmc from tos filepath
+
+    -- find the list of MX sorted by priority to use
     lMx <- (findMXofDom (domainpart $ address $ head to))
            >>= \l -> return $ sortBy (compare `on` snd) l
-    sended <- tryToSendMail lMx from to
-    return $ if sended
-        then ret
-        else (to:ret)
+    -- try the forward
+    sended <- tryToForwardMail lMx from to
+    return $ if sended then ret else (to:ret)
     where
-        tryToSendMail :: [(Domain, Int)] -> ForwardPath -> [ReversePath] -> IO Bool
-        tryToSendMail []     _   _  = return $ False
-        tryToSendMail (d:ds) fp rps = do
+        tryToForwardMail :: [(Domain, Int)] -- list of MX sorted by priority
+                         -> ReversePath     -- send the mail from
+                         -> [ForwardPath]   -- the list of recipients
+                         -> IO Bool         -- does it work ?
+        tryToForwardMail []     _   _  = return $ False
+        tryToForwardMail (d:ds) fp rps = do
             infoM "DeliveryManager" $ "try to send to domain: " ++ (show d)
             mcon <- smtpOpenConnection (fst d) (PortNumber 25) (currentDomain dmc)
             case mcon of
                 Nothing  -> do noticeM "DeliveryManager" $ "can't send to " ++ (show d)
-                               tryToSendMail ds fp rps
+                               tryToForwardMail ds fp rps
                 Just con -> do
                     contents <- BC.readFile filepath
                     b <- smtpSendEmail fp rps contents con
                     smtpCloseConnection con
                     return b
 
-tryToSendMail :: DeliveryManager -> ReversePath -> [ForwardPath] -> FilePath -> IO [ForwardPath]
+tryToSendMail :: DeliveryManager  -- ^ configuration
+              -> ReversePath      -- ^ send mail From
+              -> [ForwardPath]    -- ^ recipients
+              -> FilePath         -- ^ filepath where the data is
+              -> IO [ForwardPath] -- ^ unable to send to the returned recipients
 tryToSendMail dmc from tos filepath = do
     let ltos = sortPerDomain tos []
     rtos <- forwardEmail dmc from ltos filepath

@@ -44,10 +44,9 @@ instance Show EmailAddress where
 --                           From/To Path                                   --
 ------------------------------------------------------------------------------
 
--- | This format SHOULD not be used, but keep it for compatibility with RFC821
--- See RFC5321, appendix C
+-- | RFC5321 (4.1.2) specified a Path is a list of domains and an email address
 data Path = Path
-    { paths   :: [Domain]
+    { paths   :: [Domain]     -- ^ might be useless since it is deprecated
     , address :: EmailAddress
     } deriving (Show, Eq)
 
@@ -62,8 +61,10 @@ showPath (Path adl from) = "<" ++ showADL ++ (show from) ++ ">"
         showADL' [ad]    = "@" ++ (show ad) ++ ":"
         showADL' (ad:xs) = "@" ++ (show ad) ++ "," ++ (showADL' xs)
 
+-- | As specified in RFC5321 (4.1.2), a reverse path is a Path
+type ReversePath = Maybe Path
+-- | As specified in RFC5321 (4.1.2), a forward path is a Path
 type ForwardPath = Path
-type ReversePath = Path
 
 ------------------------------------------------------------------------------
 --                               Email                                      --

@@ -347,8 +347,8 @@ commandProcessor config h = do
 		    case parseCommandByteString $ BC.concat [buff, BC.pack "\n\r"] of
 		        Right (HELO client) -> commandHandleHELO h client    >> commandProcessor config h
 		        Right (EHLO client) -> commandHandleEHLO h client    >> commandProcessor config h
-		        Right (MAIL from)   -> commandHandleMAIL h from      >> commandProcessor config h
-		        Right (RCPT to)     -> commandHandleRCPT h to config >> commandProcessor config h
+		        Right (MAIL from _) -> commandHandleMAIL h from      >> commandProcessor config h
+		        Right (RCPT to   _) -> commandHandleRCPT h to config >> commandProcessor config h
 		        Right (VRFY user)   -> return $ CPVRFY user
 		        Right DATA          -> commandHandleDATA h config    >> return CPEMAIL
 		        Right QUIT          -> return CPQUIT
@@ -401,8 +401,8 @@ smtpSendEmail :: ReversePath   -- the sender
               -> SMTPConnection
               -> IO Bool
 smtpSendEmail from to content con = do
-    smtpTryCommand (MAIL from) con RC250Ok
-    mapM (\t -> smtpTryCommand (RCPT t  ) con RC250Ok) to
+    smtpTryCommand (MAIL from []) con RC250Ok
+    mapM (\t -> smtpTryCommand (RCPT t []) con RC250Ok) to
     smtpTryCommand (DATA     ) con RC354StartMailInput
     sendTheData con
     where
@@ -440,8 +440,8 @@ smtpSendCommand :: Command
                 -> IO [Either String Response]
 smtpSendCommand (HELO domain) h = smtpSendString h $ "HELO " ++ domain
 smtpSendCommand (EHLO domain) h = smtpSendString h $ "EHLO " ++ domain
-smtpSendCommand (MAIL from)   h = smtpSendString h $ "MAIL FROM:" ++ (showPath from)
-smtpSendCommand (RCPT to)     h = smtpSendString h $ "RCPT TO:" ++ (showPath to)
+smtpSendCommand (MAIL from _) h = smtpSendString h $ "MAIL FROM:" ++ (maybe "<>" showPath from)
+smtpSendCommand (RCPT to   _) h = smtpSendString h $ "RCPT TO:" ++ (showPath to)
 smtpSendCommand DATA          h = smtpSendString h "DATA"
 smtpSendCommand RSET          h = smtpSendString h "RSET"
 smtpSendCommand QUIT          h = smtpSendString h "QUIT"
