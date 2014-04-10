@@ -32,7 +32,6 @@ module Network.SMTP.Types
 
 import qualified Data.ByteString.Char8 as BC
 import Data.Maild.Email
-import Data.Hourglass (Elapsed)
 
 ------------------------------------------------------------------------------
 --                           Mail Storage Users                             --
@@ -50,8 +49,7 @@ data SMTPType = SMTP | ESMTP
 
 -- | contains all the needed data to receive/forward emails
 data ClientConnectionState = ClientConnectionState
-    { timestamp    :: Elapsed
-    , domainClient :: Maybe Domain          -- ^ the domain name of the client
+    { domainClient :: Maybe Domain          -- ^ the domain name of the client
     , identified   :: Maybe MailStorageUser -- ^ if the user has been identified
     , smtpType     :: Maybe SMTPType
     , smtpMail     :: Email                 -- ^ the email

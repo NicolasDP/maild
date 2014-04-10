@@ -19,6 +19,7 @@ import System.Log.Logger
 import System.Log.Handler (setFormatter)
 import System.Log.Handler.Simple
 import System.Log.Formatter
+import System.IO (stdout)
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar
@@ -72,15 +73,18 @@ logEmergency = logMessage EMERGENCY
 
 configureLoggingSystem :: Config -> IO ()
 configureLoggingSystem conf = do
+    updateGlobalLogger rootLoggerName (removeHandler)
     lvl <- lookupDefault "WARNING" conf "log.level"
-    updateGlobalLogger rootLoggerName (setLevel $ read lvl)
+    sh <- streamHandler stdout (read lvl) >>= \sh -> return $
+            setFormatter sh (simpleLogFormatter "[$loggername] $msg")
+    updateGlobalLogger rootLoggerName (setLevel (read lvl). addHandler sh)
     mfile <- C.lookup conf "log.file"
     filelvl <- lookupDefault "INFO" conf "log.file-level"
     case mfile of
         Nothing   -> return ()
         Just file -> do
             h <- fileHandler file (read filelvl) >>= \lh -> return $
-                    setFormatter lh (simpleLogFormatter "[$time : $loggername : $prio] $msg")
+                    setFormatter lh (simpleLogFormatter "[$loggername][$time] $msg")
             updateGlobalLogger rootLoggerName (addHandler h)
 
 defaultMain :: FilePath -> IO ()
@@ -239,7 +243,7 @@ tryToForward dmc email =
 runDeliveryManager :: DeliveryManager -> DeliveryChan -> IO ()
 runDeliveryManager dmc dmChan = do
     email <- getNextEmailToDeliver dmChan
-    noticeM "DeliveryManager" $ "received new email: " ++ (show email)
+    noticeM "DeliveryManager" $ "received new email: " ++ (show $ mailData email)
     -- New email to deliver:
     -- -1- deliver to local users:
     email' <- deliverEmailToLocalRCPT dmc email
@@ -248,6 +252,6 @@ runDeliveryManager dmc dmChan = do
         remains <- tryToForward dmc email'
         case remains of
            Nothing      -> noticeM "DeliveryManager" "the email is gone"
-           Just email'' -> warningM "DeliveryManager" $ "can't send to: " ++ (show email'')
+           Just email'' -> warningM "DeliveryManager" $ "can't send to: " ++ (show $ mailTo email'')
     deleteDataFromDeliveryDir (mailStorageDir dmc) email'
     runDeliveryManager dmc dmChan

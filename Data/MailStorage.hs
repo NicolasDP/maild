@@ -37,6 +37,7 @@ module Data.MailStorage
     ) where
 
 import Network.SMTP.Types
+import Network.SMTP.Connection (ConnectionID)
 import Data.Maild.Email
 
 import qualified Crypto.Hash as Hash
@@ -140,14 +141,17 @@ isMailStorageDir dir = do
 
 -- | This function aims to generate a unique filename.
 -- the filename is given as follow:
--- <ISO8601-date>-+-<SHA3 of @client domain@ @from address@ @current time@ @random number@>
+-- <ISO8601-date>_<SHA3 of @client domain@ @from address@ @current time@ @random number@>_<connectionId)
 generateUniqueFilename :: String -- ^ client domain
                        -> String -- ^ from address
+                       -> ConnectionID -- ^ Connection ID
                        -> IO (FilePath)
-generateUniqueFilename client from = do
+generateUniqueFilename client from conId = do
     time <- timeCurrent
     random <- getStdRandom (randomR (1, 9999999)) :: IO Int
-    return $ (timePrint getISOTimeFormat time) ++ "_" ++ (BC.unpack $ getHash $ randomThing (show time) (show random))
+    return $ (timePrint getISOTimeFormat time)
+             ++ "_" ++ (BC.unpack $ getHash $ randomThing (show time) (show random))
+             ++ "_" ++ conId
     where
         getISOTimeFormat = ISO8601_DateAndTime
         getHash :: BC.ByteString -> BC.ByteString
