@@ -121,7 +121,6 @@ You don't need to reload maild to manage new users/mailboxes.
 * E-SMTP:
     * AUTH: LOGIN and CRAM-MD5
     * STARTTLS: start a TLS connection even from the port 25
-* DeliveryManager (to apply filter and forward/delivery to users' mailboxes)
 * IMAP daemon
 
 ## Comments
