@@ -153,12 +153,12 @@ acceptConnection config connections sock chan = do
     (handle, peeraddr, _) <- accept sock
     nConnections <- readMVar connections
     isBlackListed <- checkInBlackList config peeraddr
-    if isBlackListed || nConnections < smtpMaxClients config
-        then do modifyMVar_ connections $ \c -> return $ c + 1
+    if isBlackListed || nConnections >= smtpMaxClients config
+        then forkIO $ rejectClient config handle peeraddr
+        else do modifyMVar_ connections $ \c -> return $ c + 1
                 forkIO $ do
                     acceptClient config handle peeraddr chan
                     modifyMVar_ connections $ \c -> return $ c - 1
-        else do forkIO $ rejectClient config handle peeraddr
     acceptConnection config connections sock chan
 
 checkInBlackList :: SMTPConfig -> String -> IO Bool

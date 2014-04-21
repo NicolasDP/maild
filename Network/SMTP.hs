@@ -134,13 +134,7 @@ rejectClient :: SMTPConfig -> Handle -> HostName -> IO ()
 rejectClient config h hostname = do
     con <- handleToSMTPConnection h "server" hostname =<< atomically newTChan 
     respond554 con
-    loopRejectClient con
-    where
-        loopRejectClient con = do
-            buff <- liftIO $ hcGetLine con
-            case parseCommandByteString $ BC.concat [buff, BC.pack "\n\r"] of
-                Right QUIT -> closeHandle con
-                _          -> respond503 con >> loopRejectClient con
+    closeHandle con
 
 ------------------------------------------------------------------------------
 --                            Responding to Client                          --
