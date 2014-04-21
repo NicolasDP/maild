@@ -95,6 +95,7 @@ data Command
     | RSET
     | QUIT
     | INVALCMD String
+    | TIMEOUT
     deriving (Show, Eq)
 
 ------------------------------------------------------------------------------

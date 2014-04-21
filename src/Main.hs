@@ -48,7 +48,8 @@ getSMTPConfigFrom conf ms = do
     d <- require conf "smtp.domain"
     p <- require conf "smtp.port"
     c <- require conf "smtp.connections"
-    return $ SMTPConfig p d c ms
+    l <- require conf "smtp.blacklist"
+    return $ SMTPConfig p d c l ms
 
 getDeliveryManagerConfig :: Config -> MailStorage -> IO DeliveryManager
 getDeliveryManagerConfig conf ms = do
@@ -149,15 +150,25 @@ runServerOnPort config chan = withSocketsDo $ do
 
 acceptConnection :: SMTPConfig -> MVar Int -> Socket -> SMTPChan -> IO ()
 acceptConnection config connections sock chan = do
-    (handle, _, _) <- accept sock
+    (handle, peeraddr, _) <- accept sock
     nConnections <- readMVar connections
-    if nConnections < smtpMaxClients config
+    isBlackListed <- checkInBlackList config peeraddr
+    if isBlackListed || nConnections < smtpMaxClients config
         then do modifyMVar_ connections $ \c -> return $ c + 1
                 forkIO $ do
-                    acceptClient config handle chan
+                    acceptClient config handle peeraddr chan
                     modifyMVar_ connections $ \c -> return $ c - 1
-        else do forkIO $ rejectClient config handle
+        else do forkIO $ rejectClient config handle peeraddr
     acceptConnection config connections sock chan
+
+checkInBlackList :: SMTPConfig -> String -> IO Bool
+checkInBlackList config addr = do
+    list <- (readFile $ smtpBlackList config) >>= \l -> return $ lines l
+    return $ isInList list
+    where
+        isInList :: [String] -> Bool
+        isInList []     = False
+        isInList (x:xs) = if isSuffixOf addr x then True else isInList xs
 
 ------------------------------------------------------------------------------
 --                      DeliveryManager: MainLoop                           --

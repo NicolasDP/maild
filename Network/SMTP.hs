@@ -54,6 +54,7 @@ data SMTPConfig = SMTPConfig
     { smtpPort       :: Int
     , smtpMxDomain   :: Domain
     , smtpMaxClients :: Int
+    , smtpBlackList  :: FilePath
     , storageDir     :: MailStorage
     } deriving (Show)
 
@@ -88,28 +89,13 @@ emptyEmail = Email
                 }
 
 addMailFrom :: Email -> ReversePath -> Email
-addMailFrom email from
-    = Email
-        { mailFrom = Just from
-        , mailTo   = mailTo email
-        , mailData = mailData email
-        }
+addMailFrom email from = email { mailFrom = Just from }
 
 addMailTo :: Email -> ForwardPath -> Email
-addMailTo email to
-    = Email
-        { mailFrom = mailFrom email
-        , mailTo   = to:(mailTo email)
-        , mailData = mailData email
-        }
+addMailTo email to = email { mailTo   = to:(mailTo email) }
 
 addMailData :: Email -> FilePath -> Email
-addMailData email datapath
-    = Email
-        { mailFrom = mailFrom email
-        , mailTo   = mailTo email
-        , mailData = datapath
-        }
+addMailData email datapath = email { mailData = datapath }
 
 newClientConnectionState :: ClientConnectionState
 newClientConnectionState = do
@@ -123,53 +109,30 @@ newClientConnectionState = do
 -- | Accept a client, and communicate with him to get emails.
 -- -1- send code 221 ;
 -- -2- read/answer any commands
-acceptClient :: SMTPConfig -> Handle -> SMTPChan -> IO ()
-acceptClient config h chan = do
-    con <- handleToSMTPConnection h "server"
+acceptClient :: SMTPConfig
+             -> Handle   -- connected client
+             -> HostName -- client's ip addr or hostname
+             -> SMTPChan
+             -> IO ()
+acceptClient config h hostname chan = do
+    con <- handleToSMTPConnection h "server" hostname chan
     -- list the managed domains and send it to the client
     listDoms <- listDomains $ storageDir config :: IO [String]
     respond' con 220 $ ("service ready"):listDoms
-    -- Start the connection loop:
-    clientLoop newClientConnectionState con
+    -- Start the connection loop
+    clientStart newClientConnectionState con
     where
-        clientLoop :: ClientConnectionState -> SMTPConnection -> IO ()
-        clientLoop ccs con = do
-            (err, ccs') <- runStateT (commandProcessor config con) ccs
-            case err of
-                CPQUIT   -> closeHandle con
-                CPEMAIL  -> publishEmail chan (smtpMail ccs')
-                              >> runStateT doClearBuffer ccs'
-                              >>= \(_, ccs'') -> clientLoop ccs'' con
-                CPAGAIN  -> clientLoop ccs' con
-                CPVRFY u -> do mails <- findMailStorageUsers (storageDir config) u
-                               case mails of
-                                    [] -> respond252 con
-                                    l  -> respond' con 250 $ userMailToVRFY l
-                               clientLoop ccs' con
-
-        -- a helper to print (show) a list of user :)
-        userMailToVRFY :: [MailStorageUser] -> [String]
-        userMailToVRFY []        = []
-        userMailToVRFY (user:xs) = (userMailsString (firstName user) (lastName user) (emails user)) ++ (userMailToVRFY xs)
-
-        -- print a user and it's email address
-        --
-        -- > firstname lastname <email1@domain>
-        -- > firstname lastname <email2@domain>
-        -- > ..
-        userMailsString :: String -> String -> [EmailAddress] -> [String]
-        userMailsString _ _ [] = []
-        userMailsString fname lname (addr:xs) =
-            (fname ++ " " ++ lname ++ "<" ++ (show addr) ++ ">"):(userMailsString fname lname xs)
+        clientStart :: ClientConnectionState -> SMTPConnection Email -> IO ()
+        clientStart ccs con = evalStateT (commandProcessorInit config con) ccs
 
 -- | Reject a client:
 -- as described in RFC5321:
 -- -1- send code 554 ;
 -- -2- loop until client quit but always answer him code
 --     503 for any other command/string/input received from the handler.
-rejectClient :: SMTPConfig -> Handle -> IO ()
-rejectClient config h = do
-    con <- handleToSMTPConnection h "server"
+rejectClient :: SMTPConfig -> Handle -> HostName -> IO ()
+rejectClient config h hostname = do
+    con <- handleToSMTPConnection h "server" hostname =<< atomically newTChan 
     respond554 con
     loopRejectClient con
     where
@@ -183,13 +146,13 @@ rejectClient config h = do
 --                            Responding to Client                          --
 ------------------------------------------------------------------------------
 
-respond :: SMTPConnection -> Int -> String -> IO ()
+respond :: SMTPConnection a -> Int -> String -> IO ()
 respond con code s = do
     let msg = (show code) ++ (if null s then "" else " " ++ s) ++ "\r\n" 
     logMessage con DEBUG (show msg)
     hcPut con $ BC.pack msg 
 
-respond' :: SMTPConnection -> Int -> [String] -> IO ()
+respond' :: SMTPConnection a -> Int -> [String] -> IO ()
 respond' con code []     = respond con code []
 respond' con code [s]    = respond con code s
 respond' con code (s:xs) = do
@@ -257,12 +220,12 @@ commandHandleEHLO con client = do
             , "AUTH PLAIN" -- "LOGIN CRAM-MD5"
             ]
 
-commandHandleMAIL :: SMTPConnection -> ReversePath -> CCStateS ()
+commandHandleMAIL :: SMTPConnection Email -> ReversePath -> CCStateS ()
 commandHandleMAIL con from = do
     modify (\s -> s { smtpMail = addMailFrom (smtpMail s) from })
     liftIO $ respond250 con
 
-commandHandleRCPT :: SMTPConnection -> ForwardPath -> SMTPConfig -> CCStateS ()
+commandHandleRCPT :: SMTPConnection Email -> ForwardPath -> SMTPConfig -> CCStateS ()
 commandHandleRCPT con to config = do
     let Path _ addr = to :: Path
     isAuth <- gets (\s -> identified s)
@@ -280,7 +243,7 @@ commandHandleRCPT con to config = do
         isAllowedRCPT _    (Just _) = return True
         isAllowedRCPT addr Nothing  = isLocalAddress (storageDir config) addr
 
-authentifyPlain :: SMTPConnection -> SMTPConfig -> BC.ByteString -> CCStateS ()
+authentifyPlain :: SMTPConnection Email -> SMTPConfig -> BC.ByteString -> CCStateS ()
 authentifyPlain con config buff =
     case serverAuthPlain buff of
         Left err         -> liftIO $ respond con 501 "5.5.2: cannot decode. Is it base64?"
@@ -294,7 +257,7 @@ authentifyPlain con config buff =
                                 liftIO $ respond con 235 "2.7.0 Authentication granted"
                         else liftIO $ respond con 535 "Authentication failed"
 
-commandHandleAUTH :: SMTPConnection -> SMTPConfig -> AuthType -> Maybe String -> CCStateS ()
+commandHandleAUTH :: SMTPConnection Email -> SMTPConfig -> AuthType -> Maybe String -> CCStateS ()
 commandHandleAUTH con config PLAIN mTxt =
     case mTxt of
         Nothing -> do liftIO $ respond334 con
@@ -304,7 +267,7 @@ commandHandleAUTH con config PLAIN mTxt =
 commandHandleAUTH con config authType mTxt =
     liftIO $ respond504 con
 
-commandHandleDATA :: SMTPConnection -> SMTPConfig -> CCStateS ()
+commandHandleDATA :: SMTPConnection Email -> SMTPConfig -> CCStateS ()
 commandHandleDATA con config = do
     mdc          <- gets (\s -> domainClient s)
     mfromEmail   <- gets (\s -> mailFrom $ smtpMail s)
@@ -320,12 +283,14 @@ commandHandleDATA con config = do
             mtype <- gets (\s -> smtpType s)
             liftIO $ do
                 let filepath = (incomingDir $ storageDir config) </> filename
-                respond354 con -- say: go on! Don't be shy, give me your data
+                -- create the incoming data file (and add MIME Received at the begin of the file)
                 createIncomingDataFile (storageDir config) (smtpMxDomain config) dc mtype email
-                readMailData con filepath
-                respond250 con
+                respond354 con -- respond we are ready to receive the data
+                readMailData con filepath -- read the data and store it in the incoming data file
+                respond250 con -- respond the mail has been sent
+                publishEmail (getChannel con) email
+            doClearBuffer
     where
-        -- TODO: insert a timestamp at the TOP of the Data content
         readMailData con p = do
             buff <- liftIO $ hcGetLine con
             if buff == BC.pack (".\r")
@@ -342,34 +307,90 @@ doClearBuffer = modify clearBuffers
     where
         clearBuffers s = s { smtpMail = emptyEmail }
 
-data CommandProcessorERROR
-    = CPQUIT
-    | CPEMAIL
-    | CPAGAIN
-    | CPVRFY String
+commandHandleVRFY :: SMTPConfig -> SMTPConnection Email -> String -> CCStateS ()
+commandHandleVRFY config con u = do
+    mails <- liftIO $ findMailStorageUsers (storageDir config) u
+    liftIO $ case mails of
+         [] -> respond252 con
+         l  -> respond' con 250 $ userMailToVRFY l
+    return ()
+    where
+        -- a helper to print (show) a list of user :)
+        userMailToVRFY :: [MailStorageUser] -> [String]
+        userMailToVRFY []        = []
+        userMailToVRFY (user:xs) = (userMailsString (firstName user) (lastName user) (emails user)) ++ (userMailToVRFY xs)
 
-commandProcessor :: SMTPConfig -> SMTPConnection -> CCStateS (CommandProcessorERROR)
-commandProcessor config con = do
-    mbuff <- liftIO $ timeout (5 * 60 * 1000000) $ hcGetSome con 2048
+        -- print a user and it's email address
+        --
+        -- > firstname lastname <email1@domain>
+        -- > firstname lastname <email2@domain>
+        -- > ..
+        userMailsString :: String -> String -> [EmailAddress] -> [String]
+        userMailsString _ _ [] = []
+        userMailsString fname lname (addr:xs) =
+            (fname ++ " " ++ lname ++ "<" ++ (show addr) ++ ">"):(userMailsString fname lname xs)
+
+getNextCommand :: SMTPConfig -> SMTPConnection Email -> IO Command
+getNextCommand config con = do
+    mbuff <- timeout (5 * 60 * 1000000) $ hcGetSome con 2048
     case mbuff of
-        Nothing -> do liftIO $ logMessage con DEBUG "connection timeout"
-                      return CPQUIT
+        Nothing -> do logMessage con DEBUG "connection timeout"
+                      return $ TIMEOUT
         Just buff -> do
-            liftIO $ logMessage con DEBUG $ "read: " ++ (show buff)
-            case parseCommandByteString $ BC.concat [buff, BC.pack "\n\r"] of
-                Right (HELO client) -> commandHandleHELO con client    >> commandProcessor config con
-                Right (EHLO client) -> commandHandleEHLO con client    >> commandProcessor config con
-                Right (MAIL from _) -> commandHandleMAIL con from      >> commandProcessor config con
-                Right (RCPT to   _) -> commandHandleRCPT con to config >> commandProcessor config con
-                Right (VRFY user)   -> return $ CPVRFY user
-                Right DATA          -> commandHandleDATA con config    >> return CPEMAIL
-                Right QUIT          -> return CPQUIT
-                Right RSET          -> commandHandleRSET con           >> commandProcessor config con
-                Right (AUTH t msg)  -> commandHandleAUTH con config t msg >> commandProcessor config con
-                Right (NOOP _)      -> (liftIO $ respond250 con)       >> commandProcessor config con
-                Right (INVALCMD _)  -> (liftIO $ respond500 con)       >> commandProcessor config con
-                Right _             -> (liftIO $ respond502 con)       >> commandProcessor config con
-                Left  _             -> (liftIO $ respond500 con)       >> return CPAGAIN
+            logMessage con DEBUG $ "read: " ++ (show buff)
+            return $ case parseCommandByteString $ BC.concat [buff, BC.pack "\n\r"] of
+                Right cmd    -> cmd
+                Left message -> INVALCMD message
+
+commandProcessorInit :: SMTPConfig -> SMTPConnection Email -> CCStateS ()
+commandProcessorInit config con = do
+    cmd <- liftIO $ getNextCommand config con
+    case cmd of
+        HELO client -> commandHandleHELO con client >> commandProcessor821 config con
+        EHLO client -> commandHandleEHLO con client >> commandProcessor5321 config con
+        -- QUIT all connection that does not start by HELO of EHLO
+        _           -> (liftIO $ closeHandle con) >> return ()
+
+commandProcessor821 :: SMTPConfig -> SMTPConnection Email -> CCStateS ()
+commandProcessor821 config con = do
+    cmd <- liftIO $ getNextCommand config con
+    case cmd of
+        -- Minimal implementation
+        HELO client -> commandHandleHELO con client       >> commandProcessor821 config con
+        MAIL from _ -> commandHandleMAIL con from         >> commandProcessor821 config con
+        RCPT to   _ -> commandHandleRCPT con to config    >> commandProcessor821 config con
+        DATA        -> commandHandleDATA con config       >> commandProcessor821 config con -- send mail and clear the buffer
+        RSET        -> commandHandleRSET con              >> commandProcessor821 config con
+        NOOP _      -> (liftIO $ respond250 con)          >> commandProcessor821 config con
+        QUIT        -> liftIO $ closeHandle con
+        -- Optionals
+        VRFY user   -> commandHandleVRFY config con user  >> commandProcessor821 config con
+        INVALCMD _  -> liftIO (respond500 con >> closeHandle con)
+        TIMEOUT     -> liftIO $ closeHandle con
+        -- Missing command: EXPN
+        -- other commands : SEND, SOML, SAML && TURN
+        _           -> (liftIO $ respond502 con)          >> commandProcessor821 config con
+
+commandProcessor5321 :: SMTPConfig -> SMTPConnection Email -> CCStateS ()
+commandProcessor5321 config con = do
+    cmd <- liftIO $ getNextCommand config con
+    case cmd of
+        -- Minimal implementation:
+        EHLO client -> commandHandleEHLO con client       >> commandProcessor5321 config con
+        MAIL from _ -> commandHandleMAIL con from         >> commandProcessor5321 config con
+        RCPT to   _ -> commandHandleRCPT con to config    >> commandProcessor5321 config con
+        DATA        -> commandHandleDATA con config       >> commandProcessor5321 config con -- send mail and clear the buffer
+        RSET        -> commandHandleRSET con              >> commandProcessor5321 config con
+        NOOP _      -> (liftIO $ respond250 con)          >> commandProcessor5321 config con
+        QUIT        -> liftIO $ closeHandle con
+        VRFY user   -> commandHandleVRFY config con user  >> commandProcessor5321 config con
+        -- Extentions:
+        AUTH t msg  -> commandHandleAUTH con config t msg >> commandProcessor5321 config con
+        INVALCMD _  -> liftIO (respond500 con >> closeHandle con)
+        TIMEOUT     -> liftIO $ closeHandle con
+        -- Missing command  : EXPN, STARTTLS
+        -- obsolote commands: SEND, SOML, SAML && TURN
+        _           -> (liftIO $ respond502 con)          >> commandProcessor5321 config con
 
 ------------------------------------------------------------------------------
 --                               SMTPClient                                 --
@@ -377,17 +398,17 @@ commandProcessor config con = do
 
 -- | Close the given SMTP Connection and return the handle
 -- the server has certainly closed the connection, but let user manages it
-smtpCloseConnection :: SMTPConnection
+smtpCloseConnection :: SMTPConnection ()
                     -> IO ()
 smtpCloseConnection con = do
     smtpSendCommand QUIT con
     logMessage con DEBUG "close connection"
     hcClose con
 
-smtpOpenConnection :: Domain -> PortID -> Domain -> IO (Maybe (SMTPConnection))
+smtpOpenConnection :: Domain -> PortID -> Domain -> IO (Maybe (SMTPConnection ()))
 smtpOpenConnection d port dom = do
     h <- connectTo d port
-    con <- handleToSMTPConnection h "client"
+    con <- handleToSMTPConnection h "client" d =<< atomically newTChan 
     res <- smtpInitConnection con dom
     if res
         then return $ Just con
@@ -396,7 +417,7 @@ smtpOpenConnection d port dom = do
 
 -- | After opening a socket, here is the way to know if the server is
 -- providing an SMTP service (you still need to parse the return value)
-smtpInitConnection :: SMTPConnection
+smtpInitConnection :: SMTPConnection ()
                    -> Domain -- ^ the service domain name (us)
                    -> IO Bool
 smtpInitConnection con domain = do
@@ -404,15 +425,12 @@ smtpInitConnection con domain = do
     respl <- smtpReadResponses con
     if not $ checkResponses RC220ServiceReady respl
         then return False
-        else do res <- smtpTryCommand (HELO domain) con RC250Ok
-                if res
-                    then return True
-                    else return False
+        else smtpTryCommand (HELO domain) con RC250Ok
 
 smtpSendEmail :: ReversePath   -- the sender
               -> [ForwardPath] -- recipients
               -> BC.ByteString -- mail content
-              -> SMTPConnection
+              -> SMTPConnection ()
               -> IO Bool
 smtpSendEmail from to content con = do
     smtpTryCommand (MAIL from []) con RC250Ok
@@ -420,7 +438,7 @@ smtpSendEmail from to content con = do
     smtpTryCommand (DATA     ) con RC354StartMailInput
     sendTheData con
     where
-        sendTheData :: SMTPConnection -> IO Bool
+        sendTheData :: SMTPConnection () -> IO Bool
         sendTheData con = do
             hcPut con $ BC.concat [content, BC.pack "\r\n.\r\n"]
             l <- smtpReadResponses con
@@ -429,7 +447,7 @@ smtpSendEmail from to content con = do
                 _                                      -> False
 
 smtpTryCommand :: Command
-               -> SMTPConnection
+               -> SMTPConnection ()
                -> ResponseCode
                -> IO Bool
 smtpTryCommand cmd con expected = do
@@ -448,7 +466,7 @@ checkResponse expected (Right r) = case (code r) of
                                     Right c -> c == expected
 
 smtpSendCommand :: Command
-                -> SMTPConnection
+                -> SMTPConnection ()
                 -> IO [Either String Response]
 smtpSendCommand (HELO domain) con = smtpSendString con $ "HELO " ++ domain
 smtpSendCommand (EHLO domain) con = smtpSendString con $ "EHLO " ++ domain
@@ -466,7 +484,7 @@ smtpSendCommand cmd           _ = return $ [Left $ "not supported yet: " ++ (sho
 
 -- | Send a specific string to the server
 -- no need to add the command line terminal chars (CRLF) they will be append
-smtpSendString :: SMTPConnection
+smtpSendString :: SMTPConnection ()
                -> String         -- ^ the command to send
                -> IO [Either String Response]
 smtpSendString con s = do
@@ -475,7 +493,7 @@ smtpSendString con s = do
     logMessage con DEBUG $ show msg
     smtpReadResponses con
 
-smtpReadResponses :: SMTPConnection
+smtpReadResponses :: SMTPConnection ()
                   -> IO [Either String Response]
 smtpReadResponses con = do
     -- mbuff <- timeout (5 * 60 * 1000000) $ hcGetSome con 2048
