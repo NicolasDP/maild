@@ -35,6 +35,9 @@ import Data.Configurator.Types
 import Data.DeliveryManager
 import qualified Data.ByteString.Char8 as BC
 
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
+
 getMailStorageConfig :: Config -> IO MailStorage
 getMailStorageConfig conf = do
     dir <- require conf "mailstorage.path"
@@ -140,25 +143,28 @@ recvLoop config dmChan smtpChan = do
 --                          SMTP-Server: MainLoop                           --
 ------------------------------------------------------------------------------
 
+type ConnectionMap = Map String Int
+
 runServerOnPort :: SMTPConfig -> SMTPChan -> IO ()
 runServerOnPort config chan = withSocketsDo $ do
     let port = fromIntegral $ smtpPort config
     socket <- listenOn $ PortNumber port
-    connections <- newMVar 0
+    connections <- newMVar $ Map.empty
     logInfo $ "start SMTP server on port: " ++ (show $ smtpPort config)
     acceptConnection config connections socket chan
 
-acceptConnection :: SMTPConfig -> MVar Int -> Socket -> SMTPChan -> IO ()
+acceptConnection :: SMTPConfig -> MVar ConnectionMap -> Socket -> SMTPChan -> IO ()
 acceptConnection config connections sock chan = do
     (handle, peeraddr, _) <- accept sock
-    nConnections <- readMVar connections
+    numberOfConnections <- withMVar connections (\c -> return $ Map.lookup peeraddr c)
+    size <- withMVar connections (\c -> return $ Map.size c)
     isBlackListed <- checkInBlackList config peeraddr
-    if isBlackListed || nConnections >= smtpMaxClients config
+    if size > smtpMaxClients config || isBlackListed || maybe False (\x -> x > 1) numberOfConnections
         then forkIO $ rejectClient config handle peeraddr
-        else do modifyMVar_ connections $ \c -> return $ c + 1
+        else do modifyMVar_ connections $ \c -> return $ Map.insertWith (\_ o -> o + 1) peeraddr 0 c
                 forkIO $ do
                     acceptClient config handle peeraddr chan
-                    modifyMVar_ connections $ \c -> return $ c - 1
+                    modifyMVar_ connections $ \c -> return $ Map.update (\x -> if x == 1 then Nothing else Just (x-1)) peeraddr c
     acceptConnection config connections sock chan
 
 checkInBlackList :: SMTPConfig -> String -> IO Bool

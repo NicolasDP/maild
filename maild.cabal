@@ -26,6 +26,7 @@ executable maild
                      , configurator
                      , filepath
                      , maild
+                     , containers
                      , stm
                      , directory
   hs-source-dirs:      src
