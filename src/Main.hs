@@ -174,7 +174,7 @@ checkInBlackList config addr = do
     where
         isInList :: [String] -> Bool
         isInList []     = False
-        isInList (x:xs) = if isSuffixOf addr x then True else isInList xs
+        isInList (x:xs) = if isSuffixOf x addr then True else isInList xs
 
 ------------------------------------------------------------------------------
 --                      DeliveryManager: MainLoop                           --
