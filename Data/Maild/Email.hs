@@ -32,6 +32,9 @@ type Domain = String
 -- > local-part@domain.net
 type LocalPart = String
 
+-- | Email address
+--
+-- > localpart@domain.net
 data EmailAddress = EmailAddress
     { localpart  :: LocalPart
     , domainpart :: Domain

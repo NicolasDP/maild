@@ -22,7 +22,7 @@ module Network.SMTP.Types
       -- ** SMTP extensions
     , ESMTPKeyWord
     , ESMTPValue
-    , ESMTPParameter(..)
+    , ESMTPParameters
     , MailParameters
     , RcptParameters
       -- * SMTP Responses
@@ -30,6 +30,7 @@ module Network.SMTP.Types
     , ResponseCode(..)
     ) where
 
+import Data.Map.Strict (Map)
 import qualified Data.ByteString.Char8 as BC
 import Data.Maild.Email
 
@@ -37,6 +38,7 @@ import Data.Maild.Email
 --                           Mail Storage Users                             --
 ------------------------------------------------------------------------------
 
+-- | describe a user
 data MailStorageUser = MailStorageUser
     { emails      :: [EmailAddress] -- ^ the list of email address owned
     , firstName   :: String         -- ^ user's firstname
@@ -44,6 +46,7 @@ data MailStorageUser = MailStorageUser
     , userDigest  :: String         -- ^ user's digest
     } deriving (Show, Eq)
 
+-- | SMTP or EMSTP protocol
 data SMTPType = SMTP | ESMTP
     deriving (Show, Eq)
 
@@ -59,8 +62,13 @@ data ClientConnectionState = ClientConnectionState
 --                            Authentifications                             --
 ------------------------------------------------------------------------------
 
+-- | user's name
 type UserName = BC.ByteString
+
+-- | user's digest
 type Password = BC.ByteString
+
+-- | type of authentification implemented
 data AuthType
     = PLAIN
     | LOGIN
@@ -71,16 +79,21 @@ data AuthType
 --                               Commands                                   --
 ------------------------------------------------------------------------------
 
+-- | A ESMTP key word
 type ESMTPKeyWord = String
+
+-- | A ESMTPValue
 type ESMTPValue   = String
-data ESMTPParameter = ESMTPParameter
-    { paramKey :: ESMTPKeyWord
-    , paramValue :: Maybe ESMTPValue
-    } deriving (Eq, Show)
 
-type MailParameters = [ESMTPParameter]
-type RcptParameters = [ESMTPParameter]
+-- | A ESMTPParameter collection
+type ESMTPParameters = Map ESMTPKeyWord (Maybe ESMTPValue)
 
+-- | the MAIL command may receive parameters
+type MailParameters = ESMTPParameters
+-- | the RCTP command may receive parameters
+type RcptParameters = ESMTPParameters
+
+-- | (E)SMTP commands
 data Command
     = HELO String
     | EHLO String
@@ -94,14 +107,15 @@ data Command
     | NOOP (Maybe String)
     | RSET
     | QUIT
-    | INVALCMD String
-    | TIMEOUT
+    | INVALCMD String -- ^ use to know if the command is not supported
+    | TIMEOUT         -- ^ use to raise an error in case of a timeout
     deriving (Show, Eq)
 
 ------------------------------------------------------------------------------
 --                               Response                                   --
 ------------------------------------------------------------------------------
 
+-- | Non-exautive list of possible response code
 data ResponseCode
     = RC500SyntaxCommandError
     | RC501SyntaxParameterError
@@ -129,7 +143,7 @@ data ResponseCode
     | RC554Failed
 	deriving (Show, Read, Eq)
 
--- As described in a RFC5321, a response is a CODE with message
+-- | As described in a RFC5321, a response is a CODE with message
 -- see section 4.2.1
 data Response = Response
     { code          :: Either Int ResponseCode

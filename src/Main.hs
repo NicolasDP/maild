@@ -7,10 +7,9 @@
 -- Portability : unknown
 --
 {-# Language OverloadedStrings #-}
+
 import Network
 import Network.SMTP
-import Network.SMTP.Types
-import Network.SMTP.Auth
 import qualified Network.DNS as DNS
 
 import System.Environment (getArgs, getProgName)
@@ -219,8 +218,7 @@ forwardEmail dmc from (to:tos) filepath = do
                 Nothing  -> do noticeM "DeliveryManager" $ "can't send to " ++ (show d)
                                tryToForwardMail ds fp rps
                 Just con -> do
-                    contents <- BC.readFile filepath
-                    b <- smtpSendEmail fp rps contents con
+                    b <- smtpSendEmail con fp rps filepath
                     smtpCloseConnection con
                     return b
 

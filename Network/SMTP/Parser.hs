@@ -8,8 +8,7 @@
 --
 {-# LANGUAGE OverloadedStrings #-}
 module Network.SMTP.Parser
-    (
-      parseCommandByteString
+    ( parseCommandByteString
     , parseCommandString
     , parseResponseByteString
     , parseResponseString
@@ -23,6 +22,8 @@ import qualified Data.ByteString.Char8  as BC
 import Data.List                        as L (intercalate, takeWhile, dropWhile, tail)
 import Data.Char                             (toUpper, isAlphaNum, isControl)
 import Data.Attoparsec.ByteString.Char8 as AC
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 
 import Control.Applicative ((<|>))
 
@@ -70,22 +71,22 @@ parseMailParameters = parseESMTPParameters
 parseRcptParameters :: Parser RcptParameters
 parseRcptParameters = parseESMTPParameters
 
-parseESMTPParameters :: Parser [ESMTPParameter]
+parseESMTPParameters :: Parser ESMTPParameters
 parseESMTPParameters = do
-    p <- parseESMTPParameter
-    l <- do parseSP
-            parseESMTPParameters
-         <|> return []
-    return $ p:l
+    (k, v) <- parseESMTPParameter
+    map   <- do parseSP
+                parseESMTPParameters
+             <|> return Map.empty
+    return $ Map.insert k v map
 
-parseESMTPParameter :: Parser ESMTPParameter
+parseESMTPParameter :: Parser (ESMTPKeyWord, Maybe ESMTPValue)
 parseESMTPParameter = do
     key <- parseESMTPKeyWord
     mvalue <- do char '='
                  value <- parseESMTPValue
                  return $ Just value
               <|> return Nothing
-    return $ ESMTPParameter key mvalue
+    return $ (key, mvalue)
 
 parseESMTPKeyWord :: Parser ESMTPKeyWord
 parseESMTPKeyWord = AC.many' $ satisfy $ \c -> isAlphaNum c || c == '-'
@@ -239,9 +240,11 @@ parseCommand = do
     parseCRLF
     return c
 
+-- | Parses a String
 parseCommandString :: String -> Either String Command
 parseCommandString s = parseCommandByteString $ BC.pack s
 
+-- | Parses a ByteString
 parseCommandByteString :: BC.ByteString -> Either String Command
 parseCommandByteString bs = parseOnly parseCommand bs
 
@@ -291,8 +294,10 @@ parseResponse
     =   parseResponseLine ' ' True  -- End of response
     <|> parseResponseLine '-' False -- we can expect some more lines
 
+-- | parses a response String
 parseResponseString :: String -> Either String Response
 parseResponseString s = parseResponseByteString $ BC.pack s
 
+-- | parses a response ByteString
 parseResponseByteString :: BC.ByteString -> Either String Response
 parseResponseByteString bs = parseOnly parseResponse bs

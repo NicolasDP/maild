@@ -38,6 +38,8 @@ Library
                      , Network.SMTP.Parser
                      , Network.SMTP.Auth
                      , Network.SMTP.Connection
+                     , Network.SMTP.Server
+                     , Network.SMTP.Client
                      , Data.MailStorage
                      , Data.Maild.Email
                      , Data.DeliveryManager
@@ -48,6 +50,7 @@ Library
                      , network
                      , stm
                      , mtl
+                     , containers
                      , hourglass
                      , cryptohash
                      , configurator

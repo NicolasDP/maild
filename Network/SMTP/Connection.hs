@@ -26,8 +26,13 @@ import System.Log.Handler (setFormatter)
 import System.Log.Handler.Simple
 import System.Log.Formatter
 
+-- | unique identifier for a given connection
 type ConnectionID = String
 
+-- | A SMTPConnection
+--
+-- define basis and method to properly handle connections in a context
+-- of SMTP protocol
 data SMTPConnection a = SMTPConnection
     { hcGetLine    :: IO BC.ByteString
     , hcGetSome    :: Int -> IO BC.ByteString
@@ -35,15 +40,20 @@ data SMTPConnection a = SMTPConnection
     , hcFlush      :: IO ()
     , hcClose      :: IO ()
     , hcIsOpen     :: IO Bool
-    , logMessage   :: Priority -> String -> IO ()
-    , getHostName  :: String
-    , timestamp    :: Elapsed
-    , connectionID :: ConnectionID
-    , getChannel   :: TChan a
+    , logMessage   :: Priority -> String -> IO () -- ^ log messages with connection context information
+    , getHostName  :: String                      -- ^ the client hostname (domain name)
+    , timestamp    :: Elapsed                     -- ^ the date-time when the connection has been established
+    , connectionID :: ConnectionID                -- ^ a unique identifier for this connection
+    , getChannel   :: TChan a                     -- ^ get the Connection channel for notification
     }
 
-handleToSMTPConnection :: Handle -> String -> String -> TChan a -> IO (SMTPConnection a)
-handleToSMTPConnection h name hostname chan = do
+-- | Create an SMTPConnection from the given handle
+handleToSMTPConnection :: Handle  -- ^ the connection Handle
+                       -> String  -- ^ the client hostname
+                       -> String  -- ^ a connection name (use for debug purpose only)
+                       -> TChan a
+                       -> IO (SMTPConnection a)
+handleToSMTPConnection h hostname name chan = do
     t <- timeCurrent
     random <- getStdRandom (randomR (10000000, 99999999)) :: IO Int
     let hash = show random

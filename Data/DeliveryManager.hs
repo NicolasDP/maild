@@ -27,6 +27,7 @@ import Control.Concurrent.STM
 import System.FilePath  (FilePath, (</>))
 import System.Directory (createDirectoryIfMissing, copyFile)
 
+-- | describe the delivery manager
 data DeliveryManager = DeliveryManager
     { mailStorageDir :: MailStorage
     , currentDomain  :: Domain
@@ -74,7 +75,11 @@ deliverEmailToLocalRCPT dmc email = do
 
         deliverToLocalUser ms email (EmailAddress local domain) = do
             createDirectoryIfMissing False deliveryDir
+            createDirectoryIfMissing False deliveryTmpDir
+            createDirectoryIfMissing False deliveryCurDir
             copyFile dataFilePath (deliveryDir </> (mailData email))
             where
                 dataFilePath = (forDeliveryDir ms) </> (mailData email)
                 deliveryDir  = (domainsDir ms) </> domain </> local </> "new"
+                deliveryTmpDir  = (domainsDir ms) </> domain </> local </> "tmp"
+                deliveryCurDir  = (domainsDir ms) </> domain </> local </> "cur"

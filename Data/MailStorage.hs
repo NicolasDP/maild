@@ -61,15 +61,21 @@ import qualified Data.ByteString.Char8 as BC (unpack, pack, ByteString, writeFil
 --                              Mail Storages                               --
 ------------------------------------------------------------------------------
 
+-- | the name of the directory used to store the incoming emails
 getIncomingDir :: FilePath
 getIncomingDir = "incoming"
 
+-- | the name of the directory used to store the "Ready for delivery" emails
 getForDeliveryDir :: FilePath
 getForDeliveryDir = "for-delivery"
 
+-- | the name of the directory used to user's configuration files
 getUsersDir :: FilePath
 getUsersDir = "users"
 
+-- | the name of the directory used to manage the domains and their localpart
+-- a domain is a directory (the domain name is the directory name)
+-- each domain may contains localpart. A local part is a subdirectory of this domain.
 getDomainsDir :: FilePath
 getDomainsDir = "domains"
 
@@ -82,6 +88,7 @@ getMandatorySubDir =
     , getUsersDir
     ]
 
+-- | Configuration for MailStorage
 data MailStorage = MailStorage
     { mainDir        :: FilePath
     , incomingDir    :: FilePath
@@ -160,6 +167,8 @@ generateUniqueFilename client from conId = do
         randomThing :: String -> String -> BC.ByteString
         randomThing t r = BC.pack $ t ++ client ++ from ++ r
 
+-- | in the case the server is receiving a new MAIL. We are required to add
+-- a MIME Header "Received:".
 createIncomingDataFile :: MailStorage
                        -> Domain
                        -> Domain
@@ -218,6 +227,7 @@ fromIncomingToFordelivery ms email = renameFile inComingPath forDeliveryPath
         inComingPath    = (incomingDir    ms) </> (mailData email)
         forDeliveryPath = (forDeliveryDir ms) </> (mailData email)
 
+-- | Delete a file email from the Delivery Directory (you may lost of the data)
 deleteDataFromDeliveryDir :: MailStorage
                           -> Email
                           -> IO ()
@@ -270,24 +280,29 @@ deleteDataFromDeliveryDir ms email = removeFile filepath
 defaultMailStorageUser :: MailStorageUser
 defaultMailStorageUser = MailStorageUser [] "" "" ""
 
+-- | list the domains supported
+listDomains :: MailStorage -> IO [Domain]
+listDomains ms =
+    (getDirectoryContents $ domainsDir ms) >>= \xs -> return $ filter (\x -> notElem x [".", ".."]) xs
+
+-- | list the mailbox in the given domain
+listMailBoxs :: MailStorage -> Domain -> IO [LocalPart]
+listMailBoxs ms d =
+    (getDirectoryContents $ (domainsDir ms) </> d) >>= \xs -> return $ filter (\x -> notElem x [".", ".."]) xs
+
+-- | list users
+listUsers :: MailStorage -> IO [FilePath]
+listUsers ms =
+    (getDirectoryContents $ usersDir ms) >>= \xs -> return $ filter (\x -> notElem x [".", ".."]) xs
+
+-- | check if a domain is in the list of managed domains
 isSupportedDomain :: MailStorage -> Domain -> IO Bool
 isSupportedDomain ms d =
     let domains = domainsDir ms
         domain = domains </> d
     in  doesDirectoryExist domain
 
-listDomains :: MailStorage -> IO [Domain]
-listDomains ms =
-    (getDirectoryContents $ domainsDir ms) >>= \xs -> return $ filter (\x -> notElem x [".", ".."]) xs
-
-listMailBoxs :: MailStorage -> Domain -> IO [LocalPart]
-listMailBoxs ms d =
-    (getDirectoryContents $ (domainsDir ms) </> d) >>= \xs -> return $ filter (\x -> notElem x [".", ".."]) xs
-
-listUsers :: MailStorage -> IO [FilePath]
-listUsers ms =
-    (getDirectoryContents $ usersDir ms) >>= \xs -> return $ filter (\x -> notElem x [".", ".."]) xs
-
+-- | check if a localpart is a localpart of the given domain
 isLocalPartOf :: MailStorage -> Domain -> LocalPart -> IO Bool
 isLocalPartOf ms d l =
     let domains = domainsDir ms
@@ -295,9 +310,14 @@ isLocalPartOf ms d l =
         mailBoxPath = domain </> l
     in  doesDirectoryExist mailBoxPath
 
+-- | Check if an EmailAdress is a local address
+--
+-- > isLocalAddress ms == isLocalPartOf ms
 isLocalAddress :: MailStorage -> EmailAddress -> IO Bool
 isLocalAddress ms (EmailAddress l d) = isLocalPartOf ms d l
 
+-- | return the list of users who are associated to the given string
+-- (check the firstname, lastname and the email)
 findMailStorageUsers :: MailStorage -> String -> IO [MailStorageUser]
 findMailStorageUsers ms s = do
     l <- listUsers ms
@@ -328,6 +348,7 @@ getMailStorageUser ms login =
                 then parseMailStorageUserFile userFile >>= \u -> return $ Just u
                 else return Nothing
 
+-- | Read a User configuration file
 parseMailStorageUserFile :: FilePath -> IO MailStorageUser
 parseMailStorageUserFile filepath = do
     conf <- load [Required filepath]
