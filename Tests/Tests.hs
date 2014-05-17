@@ -6,7 +6,6 @@
 -- Stability   : experimental
 -- Portability : unknown
 --
-
 import Test.QuickCheck
 import Test.Framework (defaultMain, testGroup)
 import Test.Framework.Providers.QuickCheck2 (testProperty)

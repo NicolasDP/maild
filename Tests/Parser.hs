@@ -8,7 +8,6 @@
 --
 module Parser where
 
-
 import Control.Applicative
 import Test.QuickCheck
 
@@ -19,55 +18,79 @@ import Network.SMTP.Types
 import Network.SMTP.Parser
 import Data.Maild.Email
 
-genStringWithDot :: Gen String
-genStringWithDot = do
-  ext <- vectorOf 2 $ elements elChar :: Gen String
-  s <- choose (1, 5) :: Gen Int
-  l <- vectorOf s $ genString 16 :: Gen [String]
-  return $ intercalate "." (l ++ [ext])
+------------------------------------------------------------------------------
+--                        Generate Random Commands                          --
+------------------------------------------------------------------------------
 
-genString :: Int -> Gen String
-genString max = do
+-- Char and list of elements used for generators
+
+charLo :: [Char]
+charLo = ['a'..'z']
+charUp :: [Char]
+charUp = ['A'..'Z']
+charLoAndUp :: [Char]
+charLoAndUp = charLo ++ charUp
+charNum :: [Char]
+charNum = ['0'..'9']
+charSpecial :: [Char]
+charSpecial = ['-']
+
+alphaNum :: [Char]
+alphaNum = charLoAndUp ++ charNum
+
+-- Generic generators
+
+genUpperString :: Int -> Gen String
+genUpperString max = do
+   l <- choose (2, max) :: Gen Int
+   vectorOf l $ elements charUp
+
+genAlphaNumString :: Int -> Gen String
+genAlphaNumString max = do
   l <- choose (2, max) :: Gen Int
-  vectorOf l $ elements elToChoose
+  vectorOf l $ elements alphaNum
 
-genMaybeString :: Int -> Gen (Maybe String)
-genMaybeString max = do
-  s <- genString 8
+genMaybeAlphaNumString :: Int -> Gen (Maybe String)
+genMaybeAlphaNumString max = do
+  s <- genAlphaNumString 8
   elements [Just s, Nothing]
 
-elToChoose :: [Char]
-elToChoose = elChar ++ elInt
+genDomainString :: Int -> Gen String
+genDomainString max = do
+  l <- choose (2, max) :: Gen Int
+  vectorOf l $ elements $ alphaNum ++ charSpecial
 
-elChar :: [Char]
-elChar = ['a'..'z']
-elInt :: [Char]
-elInt = ['0'..'9']
-elOther :: [Char]
-elOther = ['-']
+genDNS :: Gen String
+genDNS = do
+  ext <- vectorOf 2 $ elements charLo :: Gen String
+  s <- choose (1, 5) :: Gen Int
+  l <- vectorOf s $ genDomainString 16 :: Gen [String]
+  return $ intercalate "." (l ++ [ext])
+
+-- Command generators
 
 generateHELO :: Gen Command
-generateHELO = HELO <$> genStringWithDot
+generateHELO = HELO <$> genDNS
 
 generateEHLO :: Gen Command
-generateEHLO = EHLO <$> genStringWithDot
+generateEHLO = EHLO <$> genDNS
 
 generateEXPN :: Gen Command
-generateEXPN = EXPN <$> genString 32
+generateEXPN = EXPN <$> genAlphaNumString 32
 
 generateVRFY :: Gen Command
-generateVRFY = VRFY <$> genString 32
+generateVRFY = VRFY <$> genAlphaNumString 32
 
 generateHELP :: Gen Command
-generateHELP = HELP <$> genMaybeString 16
+generateHELP = HELP <$> genMaybeAlphaNumString 16
 generateNOOP :: Gen Command
-generateNOOP = NOOP <$> genMaybeString 16
+generateNOOP = NOOP <$> genMaybeAlphaNumString 16
 
 generateAUTH :: Gen Command
-generateAUTH = AUTH <$> (elements [PLAIN, LOGIN, CRAM_MD5]) <*> (genMaybeString 128)
+generateAUTH = AUTH <$> (elements [PLAIN, LOGIN, CRAM_MD5]) <*> (genMaybeAlphaNumString 128)
 
 generateINVALCMD :: Gen Command
-generateINVALCMD = VRFY <$> genString 128
+generateINVALCMD = INVALCMD <$> genUpperString 16
 
 generateMAIL :: Gen Command
 generateMAIL = MAIL <$> generateMaybePath <*> generateParameters
@@ -87,28 +110,48 @@ generateParameters = do
 
 generateParameter :: Gen (ESMTPKeyWord, Maybe ESMTPValue)
 generateParameter = do
-  k <- genString 16
-  v <- genMaybeString 54
+  k <- genAlphaNumString 16
+  v <- genMaybeAlphaNumString 54
   return (k, v)
 
 generatePath :: Gen Path
 generatePath = Path <$> genPaths <*> genAddress
   where
     genPaths :: Gen [Domain]
-    genPaths = listOf genStringWithDot
+    genPaths = listOf genDNS
 
     genAddress :: Gen EmailAddress
-    genAddress = EmailAddress <$> genStringWithDot <*> genStringWithDot
+    genAddress = EmailAddress <$> genDNS <*> genDNS
  
-generateCommand' :: Gen Command
-generateCommand' = elements [DATA, RSET, QUIT] -- no need for TIMEOUT or INVALIDCMD
-
 generateCommand :: Gen Command
 generateCommand =
   oneof
-    [ generateHELO, generateEHLO, generateEXPN, generateVRFY
-    , generateHELP, generateNOOP, generateAUTH, generateINVALCMD
-    , generateMAIL, generateRCPT, generateCommand']
+    [ generateHELO
+    , generateEHLO
+    , generateMAIL
+    , generateRCPT
+    , generateEXPN
+    , generateVRFY
+    , generateHELP
+    , generateNOOP
+    , generateAUTH
+    , generateINVALCMD
+    , generateCommand'
+    ]
+  where
+    generateCommand' :: Gen Command
+    generateCommand' = elements [DATA, RSET, QUIT]
+
+------------------------------------------------------------------------------
+--                                 Arbitrary                                --
+------------------------------------------------------------------------------
+
+instance Arbitrary Command where
+  arbitrary = generateCommand
+
+------------------------------------------------------------------------------
+--                             Property checkers                            --
+------------------------------------------------------------------------------
 
 prop_parse_smtp_command :: Command -> Bool
 prop_parse_smtp_command cmd =
@@ -121,6 +164,3 @@ prop_parse_smtp_command cmd =
   where
     cmdStr :: String
     cmdStr = showCommand cmd
-
-instance Arbitrary Command where
-  arbitrary = generateCommand
