@@ -19,6 +19,7 @@ module Network.SMTP.Types
       -- * SMTP Commands
       -- ** Command
     , Command(..)
+    , showCommand
       -- ** SMTP extensions
     , ESMTPKeyWord
     , ESMTPValue
@@ -31,6 +32,7 @@ module Network.SMTP.Types
     ) where
 
 import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 import qualified Data.ByteString.Char8 as BC
 import Data.Maild.Email
 
@@ -75,6 +77,13 @@ data AuthType
     | CRAM_MD5
     deriving (Read, Show, Eq)
 
+showAuthType :: AuthType -> String
+showAuthType t =
+  case t of
+    PLAIN    -> "PLAIN"
+    LOGIN    -> "LOGIN"
+    CRAM_MD5 -> "CRAM-MD5"
+
 ------------------------------------------------------------------------------
 --                               Commands                                   --
 ------------------------------------------------------------------------------
@@ -110,6 +119,36 @@ data Command
     | INVALCMD String -- ^ use to know if the command is not supported
     | TIMEOUT         -- ^ use to raise an error in case of a timeout
     deriving (Show, Eq)
+
+showCommand :: Command -> String
+showCommand cmd =
+  case cmd of
+    HELO dom   -> "HELO " ++ dom
+    EHLO dom   -> "EHLO " ++ dom
+    MAIL rp mp -> "MAIL FROM:" ++ (maybe "<>" showPath rp) ++ (showParameters' $ Map.toList mp)
+    RCPT rp mp -> "RCPT TO:" ++ (showPath rp) ++ (showParameters' $ Map.toList mp)
+    DATA       -> "DATA"
+    EXPN exp   -> "EXPN " ++ exp
+    VRFY str   -> "VRFY " ++ str
+    HELP mcmd  -> "HELP" ++ (maybe [] (\t -> " " ++ t) mcmd)
+    AUTH t ms  -> "AUTH " ++ (showAuthType t) ++ (maybe [] (\s -> " " ++ s) ms)
+    NOOP ms    -> "NOOP" ++ (maybe [] (\s -> " " ++ s) ms)
+    RSET       -> "RSET"
+    QUIT       -> "QUIT"
+    INVALCMD s -> s
+    TIMEOUT -> ""
+  where
+    showParameters' :: [(String, Maybe String)] -> String
+    showParameters' [] = []
+    showParameters' xs = showParameters xs
+
+    showParameters :: [(String, Maybe String)] -> String
+    showParameters [] = []
+    showParameters [(k, mv)] =
+      case mv of
+        Just v -> k ++ "=" ++ v
+        Nothing -> k
+    showParameters (x:xs) = (showParameters [x]) ++ " " ++ (showParameters xs)
 
 ------------------------------------------------------------------------------
 --                               Response                                   --

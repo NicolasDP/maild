@@ -59,3 +59,15 @@ Library
                      , filepath
                      , random
   default-language:    Haskell2010
+
+Test-Suite test-maild
+  type:                exitcode-stdio-1.0
+  hs-source-dirs:      Tests
+  Main-is:             Tests.hs
+  build-depends:       base >=4.7 && <4.8
+                     , mtl
+                     , containers
+                     , QuickCheck >= 2
+                     , test-framework
+                     , test-framework-quickcheck2
+                     , maild

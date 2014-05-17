@@ -61,8 +61,8 @@ showPath (Path adl from) = "<" ++ showADL ++ (show from) ++ ">"
         showADL = if null adl then "" else showADL' adl
 
         showADL' :: [String] -> String
-        showADL' [ad]    = "@" ++ (show ad) ++ ":"
-        showADL' (ad:xs) = "@" ++ (show ad) ++ "," ++ (showADL' xs)
+        showADL' [ad]    = "@" ++ ad ++ ":"
+        showADL' (ad:xs) = "@" ++ ad ++ "," ++ (showADL' xs)
 
 -- | As specified in RFC5321 (4.1.2), a reverse path is a Path
 type ReversePath = Maybe Path

@@ -73,23 +73,26 @@ parseRcptParameters = parseESMTPParameters
 
 parseESMTPParameters :: Parser ESMTPParameters
 parseESMTPParameters = do
-    (k, v) <- parseESMTPParameter
+    mpair <- parseESMTPParameter
     map   <- do parseSP
                 parseESMTPParameters
              <|> return Map.empty
-    return $ Map.insert k v map
+    return $ case mpair of
+                Just (k, v) ->Map.insert k v map
+                Nothing -> map
 
-parseESMTPParameter :: Parser (ESMTPKeyWord, Maybe ESMTPValue)
-parseESMTPParameter = do
-    key <- parseESMTPKeyWord
-    mvalue <- do char '='
-                 value <- parseESMTPValue
-                 return $ Just value
-              <|> return Nothing
-    return $ (key, mvalue)
+parseESMTPParameter :: Parser (Maybe (ESMTPKeyWord, Maybe ESMTPValue))
+parseESMTPParameter =
+    do key <- parseESMTPKeyWord
+       mvalue <- do char '='
+                    value <- parseESMTPValue
+                    return $ Just value
+                 <|> return Nothing
+       return $ Just (key, mvalue)
+    <|> return Nothing
 
 parseESMTPKeyWord :: Parser ESMTPKeyWord
-parseESMTPKeyWord = AC.many' $ satisfy $ \c -> isAlphaNum c || c == '-'
+parseESMTPKeyWord = AC.many1 $ satisfy $ \c -> isAlphaNum c || c == '-'
 
 parseESMTPValue :: Parser ESMTPValue
 parseESMTPValue =
