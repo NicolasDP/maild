@@ -20,7 +20,7 @@ import Data.Maild.Email
 
 import qualified Data.ByteString.Char8  as BC
 import Data.List                        as L (intercalate, takeWhile, dropWhile, tail)
-import Data.Char                             (toUpper, isAlphaNum, isControl)
+import Data.Char                             (toUpper, toLower, isAlphaNum, isControl)
 import Data.Attoparsec.ByteString.Char8 as AC
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -103,7 +103,9 @@ parseESMTPValue =
 ------------------------------------------------------------------------------
 
 parseDomain :: Parser Domain
-parseDomain = AC.many' $ satisfy $ \c -> isAlphaNum c || c == '.' || c == '-'
+parseDomain = do
+  s <- AC.many' $ satisfy $ \c -> isAlphaNum c || c == '.' || c == '-'
+  return $ map toLower s
 
 parseLocalPart :: Parser LocalPart
 parseLocalPart = parseDomain

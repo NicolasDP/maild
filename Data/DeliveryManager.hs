@@ -59,8 +59,8 @@ getNextEmailToDeliver = atomically . readTChan
 -- | method to deliver emails to local mailboxes
 -- it returns the same emails but without the local RCPT
 deliverEmailToLocalRCPT :: DeliveryManager
-                        -> Email      -- ^ the email
-                        -> IO (Email) -- ^ the email without local mailboxes
+                        -> Email    -- ^ the email
+                        -> IO Email -- ^ the email without local mailboxes
 deliverEmailToLocalRCPT dmc email = do
     remainingPaths <- deliverToLocalUsers (mailStorageDir dmc) (mailTo email)
     return $ email { mailTo = remainingPaths }
